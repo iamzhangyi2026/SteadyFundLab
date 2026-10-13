@@ -1,0 +1,76 @@
+{
+  "name": "fund-sandbox",
+  "version": "1.0.0",
+  "description": "基金模拟交易沙盒桌面端：Electron 原生窗口壳 + Python(FastAPI) 后端",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable",
+    "dist:nsis": "electron-builder --win nsis",
+    "dist:dir": "electron-builder --win --dir"
+  },
+  "devDependencies": {
+    "electron": "^31.3.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.steadyfundlab.fundsandbox",
+    "productName": "fund-sandbox 基金沙盒",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend",
+        "to": "backend"
+      },
+      {
+        "from": "../data",
+        "to": "data",
+        "filter": [
+          "**/*",
+          "!**/llm_config.json",
+          "!**/llm_pool.json",
+          "!**/ai_profile.json",
+          "!**/ai_chat.jsonl",
+          "!**/llm_calls.jsonl",
+          "!**/heartbeat.json",
+          "!**/backup_prereset_*.db",
+          "!**/tmp_restore_test.db"
+        ]
+      },
+      {
+        "from": "../config",
+        "to": "config"
+      },
+      {
+        "from": "../frontend/dist",
+        "to": "frontend/dist"
+      },
+      {
+        "from": "../runtime/python",
+        "to": "runtime/python"
+      }
+    ],
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ],
+      "icon": null
+    },
+    "portable": {
+      "artifactName": "fund-sandbox-portable.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "valuation-tracking",
+  "version": "1.0.0",
+  "description": "Fetch fund valuation data from akshare and generate tracking report",
+  "main": "scripts/valuation_tracking.py",
+  "scripts": {
+    "run": "python scripts/valuation_tracking.py"
+  },
+  "dependencies": {
+    "akshare": "^1.18.94",
+    "pandas": "^2.0.0",
+    "numpy": "^1.24.0"
+  }
+}

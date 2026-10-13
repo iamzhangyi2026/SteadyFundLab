@@ -1,0 +1,7 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+httpx==0.27.0
+akshare>=1.12.0
+sqlite-utils  # 可选，用于数据库操作
+schedule==1.2.1
+pydantic==2.5.0

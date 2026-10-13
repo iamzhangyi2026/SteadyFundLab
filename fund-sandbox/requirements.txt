@@ -1,0 +1,22 @@
+# fund-sandbox 依赖清单
+#
+# 安装方式（使用隔离的 Python 环境，不要污染系统环境）：
+#   python -m venv .venv
+#   .venv\Scripts\activate
+#   pip install -r requirements.txt
+
+# 金融数据抓取核心库。本项目用它取：
+#   - 基金净值 / 累计净值（fund_open_fund_info_em）
+#   - 行业板块行情、资金流、估值分位（stock_board_industry_*）
+#   - 概念板块（stock_board_concept_*）
+#   - 基金持仓（季报，fund_portfolio_holdings_em）
+# 注意：akshare 接口会随版本变动，升级后必须跑 scripts/verify_sources.py 验证。
+akshare>=1.12.0
+
+# akshare 的底层依赖，显式声明避免版本漂移
+pandas>=2.0.0
+requests>=2.31.0
+
+# 后端 HTTP 服务（只监听 127.0.0.1，不对外暴露）
+fastapi>=0.110.0
+uvicorn>=0.27.0

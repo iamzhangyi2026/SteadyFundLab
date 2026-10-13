@@ -1,0 +1,49 @@
+# Dependencies & build artifacts
+**/node_modules/
+fund-sandbox/frontend/dist/
+fund-sandbox/frontend/dist.bak/
+fund-sandbox/frontend/legacy/
+fund-sandbox/frontend/package-lock.json
+Backup/
+__pycache__/
+*.py[cod]
+
+# Local runtime & data
+fund-sandbox/runtime/
+fund-sandbox/data/
+fund-sandbox/data/logs/
+fund-sandbox/logs/
+fund-sandbox/_trash/
+fund-sandbox/reports/
+fund-sandbox/screenshots/
+fund-sandbox/.session-backend.json
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Local config (use config.toml.example)
+fund-sandbox/config/config.toml
+.env
+.env.*
+
+# Local docs & notes
+docs/
+.workbuddy-ai/
+fund-sandbox/.workbuddy/
+fund-sandbox/定时任务产出/
+项目分类铁律.md
+项目记忆.md
+COLLAB-LOG.md
+fund-sandbox/AGENTS.md
+
+# Local scripts
+fund-sandbox/scripts/scratch/
+fund-sandbox/frontend/.verify_tmp/
+fund-sandbox/scripts/check_memory_hygiene.py
+*.bak*
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
