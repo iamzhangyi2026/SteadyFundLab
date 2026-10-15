@@ -8,7 +8,6 @@ import { money, pct, date } from '../lib/format'
 
 // B 区（真实仓位 · 人接管 · 隔离区）。
 // 本页自带 fetch，不进 A 区共享 store——两区互不干扰。
-// 边界定义见 docs/项目/权限边界-人机隔离.md
 const API = '/api/real'
 
 async function j(url, opts) {
