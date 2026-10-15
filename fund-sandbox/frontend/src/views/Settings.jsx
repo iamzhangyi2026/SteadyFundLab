@@ -14,38 +14,35 @@ const GROUPS = [
   {
     title: '资金规则',
     items: [
-      { key: 'monthly_quota', label: '每月新增预算（元）', type: 'number', min: 1, hint: '累积制：每月往池子里累加，当月不用不清零' },
+      { key: 'monthly_quota', label: '每月新增预算（元）', type: 'number', min: 1, hint: '每月累加，当月未用不清零' },
       { key: 'per_fund_weekly', label: '单基金每周定投（元）', type: 'number', min: 1, hint: '新建定投计划的默认每期金额' },
     ],
   },
   {
-    title: '运行方式',
+    title: '运行状态',
     items: [
-      {
-        key: 'mode', label: '决策模式', type: 'select',
-        options: [
-          ['auto', '自动（推荐）：规则引擎常驻兜底，AI 在线时接管'],
-          ['rule', '纯规则引擎：AI 完全不介入'],
-          ['external', '只听外部 AI：AI 离线时系统停摆'],
-        ],
-        hint: '推荐「自动」——对话不可能 24 小时开着，纯外部模式 AI 一离线，定投该扣的款就漏了',
-      },
-      { key: 'heartbeat_timeout_hours', label: 'AI 心跳超时（小时）', type: 'number', min: 1, max: 168, hint: '超过这个时长没有新心跳 → 判定 AI 离线 → 规则引擎接管' },
+      { key: 'heartbeat_timeout_hours', label: 'AI 心跳超时（小时）', type: 'number', min: 1, max: 168, hint: '仅用于显示 AI 在线 / 离线状态；离线时不会切换决策源或触发交易' },
     ],
   },
   {
     title: '风控边界',
     items: [
-      { key: 'max_amount_per_order', label: '单笔金额上限（元）', type: 'number', min: 1, hint: '任何一笔下单都不能超过这个数' },
-      { key: 'max_orders_per_day', label: '单日下单次数上限', type: 'number', min: 1, max: 100, hint: '防止失控连环下单' },
-      { key: 'max_single_position_pct', label: '单基金仓位上限（%）', type: 'number', min: 1, max: 100, hint: '一只基金占持仓市值不能超过这个比例' },
-      { key: 'max_drawdown_stop_pct', label: '账户回撤止损线（%）', type: 'number', min: 1, max: 95, hint: '账户从高点回撤触及此线 → 暂停自动交易并告警' },
+      { key: 'max_amount_per_order', label: '单笔金额提醒线（元）', type: 'number', min: 1, hint: '单笔金额超过此值时提醒；不自动拦截下单' },
+      { key: 'max_orders_per_day', label: '单日下单提醒线（笔）', type: 'number', min: 1, max: 100, hint: '当日下单次数超过此值时提醒；不自动拦截下单' },
+      { key: 'max_single_position_pct', label: '单基金仓位提醒线（%）', type: 'number', min: 1, max: 100, hint: '持仓市值占比超过此值时提醒；不自动拦截买入' },
+      { key: 'max_drawdown_stop_pct', label: '账户回撤提醒线（%）', type: 'number', min: 1, max: 95, hint: '账户从高点回撤触及此线时生成提醒；不会自动暂停或下单' },
+    ],
+  },
+  {
+    title: '分析',
+    items: [
+      { key: 'overlap_warn_count', label: '同质化重叠预警阈值（只）', type: 'number', min: 1, max: 10, hint: '同一行业被这么多只基金同时重仓时，在持仓穿透里提示「同涨同跌」风险' },
     ],
   },
   {
     title: '费率',
     items: [
-      { key: 'purchase_discount', label: '申购费折扣（0~1）', type: 'number', min: 0, max: 1, hint: '实际申购费 = 基金原始费率 × 折扣。支付宝是部分基金 1.25 折起，默认 0.125' },
+      { key: 'purchase_discount', label: '申购费折扣（0~1）', type: 'number', min: 0, max: 1, hint: '实际申购费 = 原始费率 × 折扣' },
     ],
   },
 ]
@@ -105,16 +102,15 @@ export default function Settings() {
     return out
   }, [form, items])
 
-  const rules = account?.capital_rules || {}
   const stopped = status?.emergency_stop
 
   const onStop = async () => {
-    setStopConfirm(false)
     try {
       await setEmergencyStop(!stopped, stopped ? '恢复自动交易' : '手动紧急暂停')
-      notify(stopped ? '已恢复自动交易' : '已紧急暂停', stopped ? 'success' : 'error')
+      notify(stopped ? '已恢复自动操作' : '已暂停自动操作', stopped ? 'success' : 'error')
     } catch (e) {
       notify('操作失败：' + e.message, 'error')
+      throw e
     }
   }
 
@@ -128,12 +124,12 @@ export default function Settings() {
   }
 
   const confirmSave = async () => {
-    setSaveConfirm(false)
     try {
       await updateSettings(changes)
       notify(`已保存 ${Object.keys(changes).length} 项设置，立即生效`, 'success')
     } catch (e) {
       notify('保存失败：' + e.message, 'error')
+      throw e
     }
   }
 
@@ -161,7 +157,7 @@ export default function Settings() {
         }
       >
         <div className="muted cell-note" style={{ lineHeight: 1.7, marginBottom: 12 }}>
-          改动保存后<b>立即生效</b>，不需要重启。真正的配置写在 config.toml，这里改的就是它。
+          改动保存后<b>立即生效</b>，不需要重启。交易决策由接管 AI 负责；内置规则用于计算与风控边界，AI 离线时只显示状态。
         </div>
         {!items.length && settingsRes?.loading && <div className="loading">加载设置…</div>}
         {!items.length && !settingsRes?.loading && (
@@ -209,12 +205,13 @@ export default function Settings() {
       </Card>
 
       <Card className="col-7"
-        title="运行模式"
-        kicker="MODE"
+        title="运行状态"
+        kicker="STATUS"
         icon={<Icon.settings className="ico" />}
         right={
           <button
             className={`btn btn-sm ${stopped ? 'btn-primary' : 'btn-danger'}`}
+            disabled={!status}
             onClick={() => setStopConfirm(true)}
           >
             {stopped ? '恢复自动交易' : '紧急暂停'}
@@ -222,7 +219,7 @@ export default function Settings() {
         }
       >
         <div className="grid-2">
-          <Rule label="实际生效" v={status?.effective_mode || '—'} />
+          <Rule label="决策职责" v="接管 AI" />
           <Rule label="AI 在线" v={status?.ai_online ? '是' : '否'} />
           <Rule label="上次活跃" v={time(status?.last_seen)} />
           <Rule label="数据日期" v={date(account?.date)} />
@@ -249,13 +246,13 @@ export default function Settings() {
       />
       <ConfirmDialog
         open={stopConfirm}
-        title={stopped ? '恢复自动交易？' : '紧急暂停？'}
+        title={stopped ? '恢复自动操作？' : '紧急暂停？'}
         message={
           stopped
-            ? '恢复后，定投计划与自动下单将重新按规则执行。'
-            : '暂停后，所有自动交易与定投执行会立即停止，直到你手动恢复。已提交的委托不受影响。'
+            ? '恢复后，定投等预先设定的自动操作可继续执行。交易决策仍由接管 AI 负责。'
+            : '暂停后，定投等自动操作会停止，直到你手动恢复。已提交的委托不受影响。'
         }
-        confirmText={stopped ? '恢复自动交易' : '确认暂停'}
+        confirmText={stopped ? '恢复自动操作' : '确认暂停'}
         danger={!stopped}
         onConfirm={onStop}
         onClose={() => setStopConfirm(false)}

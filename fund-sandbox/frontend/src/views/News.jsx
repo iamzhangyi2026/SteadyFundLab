@@ -10,18 +10,8 @@ export default function News() {
   const marketNews = useStore((s) => s.marketNews.data)
   const news = useStore((s) => s.news.data)
   const refreshNews = useStore((s) => s.refreshNews)
-  const refreshMarketNews = useStore((s) => s.refreshMarketNews)
   const openExternal = useStore((s) => s.openExternal)
   const notify = useStore((s) => s.notify)
-
-  const onRefreshMarket = async () => {
-    try {
-      const r = await refreshMarketNews()
-      notify(`抓取完成，新增 ${r?.fetched ?? 0} 条`, 'success')
-    } catch (e) {
-      notify('抓取失败：' + e.message, 'error')
-    }
-  }
 
   const onRefresh = async () => {
     try {
@@ -52,52 +42,9 @@ export default function News() {
     <div className="stack">
       {/* 头条占满整行，避免标题折行 */}
       <NewsRotator className="wide" items={rotatorItems} onOpen={openLink} />
-      <Card className="col-7"
-        title="财经资讯"
-        kicker="MARKET NEWS"
-        icon={<Icon.feed className="ico" />}
-        right={
-          <span className="tag-row">
-            <span className="muted cell-note">
-              {marketNews?.date} · {mItems.length} 条
-            </span>
-            <AsyncButton className="btn btn-sm" onClick={onRefreshMarket} pendingText="抓取中…">
-              <Icon.refresh className="ico" /> 刷新抓取
-            </AsyncButton>
-          </span>
-        }
-      >
-        <div className="list">
-          {mItems.map((it) => (
-            <div className="list-item" key={it.id}>
-              <h4>{it.title}</h4>
-              {it.summary && <p>{it.summary}</p>}
-              <div className="meta">
-                <span>{it.source}</span>
-                <span>{time(it.pub_time)}</span>
-                {it.link && (
-                  <button className="link-btn" onClick={() => openLink(it.link)}>
-                    <Icon.external className="ico" style={{ width: 13, height: 13 }} /> 阅读全文
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-          {!mItems.length && (
-            <EmptyState
-              title="暂无财经资讯"
-              hint="点右上角「刷新抓取」拉取当日财经新闻"
-              action={
-                <AsyncButton className="btn btn-primary btn-sm" onClick={onRefreshMarket} pendingText="抓取中…">
-                  刷新抓取
-                </AsyncButton>
-              }
-            />
-          )}
-        </div>
-      </Card>
-
-      <Card className="col-5"
+      {/* 「财经资讯」卡片已移除：与总览「市场最新动态」同源（/api/market-news），
+          避免同一份资讯在两处重复展示。 */}
+      <Card className="wide"
         title="基金公告 / 重仓股"
         kicker="NEWS FEED"
         icon={<Icon.bell className="ico" />}
@@ -126,8 +73,10 @@ export default function News() {
               <div className="meta">
                 <span>{it.source}</span>
                 <span>{time(it.pub_time)}</span>
-                {it.link && (
-                  <button className="link-btn" onClick={() => openLink(it.link)}>
+                {/* 公告/重仓股表里的字段叫 url（不是 link）；以前只读 it.link，
+                    永远 undefined → 这一栏从来没有「阅读全文」按钮。 */}
+                {(it.link || it.url) && (
+                  <button className="link-btn" onClick={() => openLink(it.link || it.url)}>
                     <Icon.external className="ico" style={{ width: 13, height: 13 }} /> 阅读全文
                   </button>
                 )}

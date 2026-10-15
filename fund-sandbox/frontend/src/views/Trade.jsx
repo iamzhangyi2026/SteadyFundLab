@@ -3,7 +3,6 @@ import { useStore } from '../store/useStore'
 import Card from '../components/Card'
 import { Icon } from '../components/Icons'
 import EmptyState from '../components/EmptyState'
-import ExportButton from '../components/ExportButton'
 import OrderModal from '../components/OrderModal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import AsyncButton from '../components/AsyncButton'
@@ -16,6 +15,7 @@ export default function Trade() {
   const dingtou = useStore((s) => s.dingtou.data)
   const placeOrder = useStore((s) => s.placeOrder)
   const cancelOrder = useStore((s) => s.cancelOrder)
+  const deleteOrder = useStore((s) => s.deleteOrder)
   const searchFunds = useStore((s) => s.searchFunds)
   const refreshFunds = useStore((s) => s.refreshFunds)
   const addFund = useStore((s) => s.addFund)
@@ -30,28 +30,28 @@ export default function Trade() {
   const [sMsg, setSMsg] = useState(null) // { t: 'ok' | 'err' | 'info', text }
   const [cancelConfirm, setCancelConfirm] = useState(null)
   const [delConfirm, setDelConfirm] = useState(null)
+  // 搜索结果「购买」带入下单弹窗的基金代码
+  const [orderCode, setOrderCode] = useState('')
+  // 批量选择（删除 / 取消下单）：null 以外的 Set 表示已勾选的项
+  const [poolSelMode, setPoolSelMode] = useState(false)
+  const [poolSel, setPoolSel] = useState(() => new Set())
+  const [orderSelMode, setOrderSelMode] = useState(false)
+  const [orderSel, setOrderSel] = useState(() => new Set())
 
   const orderItems = orders?.items || []
   const planItems = dingtou?.items || []
 
-  const orderRows = orderItems.map((o) => ({
-    基金: o.fund_name || o.fund_code,
-    代码: o.fund_code,
-    方向: o.side === 'buy' ? '买入' : '赎回',
-    '金额/份额': o.amount,
-    状态: o.status,
-    时间: o.created_at,
-  }))
-
   const onCancel = (id) => setCancelConfirm(id)
   const confirmCancel = async () => {
     const id = cancelConfirm
-    setCancelConfirm(null)
+    if (!id) return
     try {
       await cancelOrder(id)
+      setCancelConfirm(null)
       notify('已撤销订单', 'success')
     } catch (e) {
       notify('撤销失败：' + e.message, 'error')
+      throw e
     }
   }
 
@@ -92,7 +92,7 @@ export default function Trade() {
   }
 
   const onAddFund = async (code, name) => {
-    // ⚠️后端 `POST /api/funds/add` 的 `reason` 是**必填**（业务规则：添加候选必须
+    // 后端 `POST /api/funds/add` 的 `reason` 是**必填**（业务规则：添加候选必须
     // 说明为什么添加）。原实现不收集理由就调用，加上契约本身也不匹配 → 添加从未成功。
     const reason = window.prompt(
       `添加「${name || code}」到候选池的理由（必填）：\n例如：估值洼地+趋势向上，符合筛选规则`,
@@ -116,13 +116,75 @@ export default function Trade() {
   const onDeleteFund = (code) => setDelConfirm(code)
   const confirmDeleteFund = async () => {
     const code = delConfirm
-    setDelConfirm(null)
+    if (!code) return
     try {
       await removeFund(code)
+      setDelConfirm(null)
       notify('已从交易池移除', 'success')
     } catch (e) {
       notify('移除失败：' + e.message, 'error')
+      throw e
     }
+  }
+
+  // ── 批量选择（删除 / 取消下单）─────────────────────────────
+  const toggleIn = (setter) => (id) =>
+    setter((s) => {
+      const n = new Set(s)
+      if (n.has(id)) n.delete(id)
+      else n.add(id)
+      return n
+    })
+  const togglePool = toggleIn(setPoolSel)
+  const toggleOrder = toggleIn(setOrderSel)
+  const allPoolChecked = fundItems.length > 0 && poolSel.size === fundItems.length
+  const allOrderChecked = orderItems.length > 0 && orderSel.size === orderItems.length
+  const setPoolAll = (on) => setPoolSel(on ? new Set(fundItems.map((f) => f.code)) : new Set())
+  const setOrderAll = (on) => setOrderSel(on ? new Set(orderItems.map((o) => o.order_id)) : new Set())
+
+  const doDeletePool = async () => {
+    const codes = [...poolSel]
+    if (!codes.length) { notify('请先勾选要移除的基金', 'error'); return }
+    let ok = 0
+    const errs = []
+    for (const code of codes) {
+      try { await removeFund(code); ok += 1 } catch (e) { errs.push(e.message) }
+    }
+    setPoolSel(new Set())
+    setPoolSelMode(false)
+    notify(`已移除 ${ok} 只${errs.length ? `，${errs.length} 只失败（${errs[0]}）` : ''}`, errs.length ? 'warning' : 'success')
+  }
+
+  const doDeleteOrders = async () => {
+    const ids = [...orderSel]
+    if (!ids.length) { notify('请先勾选要删除的订单', 'error'); return }
+    let ok = 0
+    const errs = []
+    for (const id of ids) {
+      try { await deleteOrder(id); ok += 1 } catch (e) { errs.push(e.message) }
+    }
+    setOrderSel(new Set())
+    setOrderSelMode(false)
+    notify(`已删除 ${ok} 条${errs.length ? `，${errs.length} 条不能删（${errs[0]}）` : ''}`, errs.length ? 'warning' : 'success')
+  }
+
+  const doCancelOrders = async () => {
+    const ids = [...orderSel]
+    if (!ids.length) { notify('请先勾选要取消的订单', 'error'); return }
+    let ok = 0
+    const errs = []
+    for (const id of ids) {
+      try { await cancelOrder(id); ok += 1 } catch (e) { errs.push(e.message) }
+    }
+    setOrderSel(new Set())
+    setOrderSelMode(false)
+    notify(`已取消 ${ok} 条${errs.length ? `，${errs.length} 条失败（${errs[0]}）` : ''}`, errs.length ? 'warning' : 'success')
+  }
+
+  // 搜索结果直接购买：带入基金代码打开下单弹窗
+  const onBuy = (code) => {
+    setOrderCode(code || '')
+    setOrderOpen(true)
   }
 
   return (
@@ -140,14 +202,33 @@ export default function Trade() {
         title="交易池"
         kicker="FUND POOL"
         right={
-          <AsyncButton
-            className="btn btn-sm"
-            onClick={onRefreshMarket}
-            pendingText="刷新中…（约20秒）"
-            title="强制重拉东财全市场表，覆盖当天新上市基金"
-          >
-            <Icon.refresh className="ico" /> 刷新市场
-          </AsyncButton>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {poolSelMode ? (
+              <>
+                <label className="muted cell-note" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={allPoolChecked} onChange={(e) => setPoolAll(e.target.checked)} /> 全选
+                </label>
+                <button className="btn btn-sm btn-danger" onClick={doDeletePool} disabled={!poolSel.size}>
+                  移除选中（{poolSel.size}）
+                </button>
+                <button className="btn btn-sm" onClick={() => { setPoolSelMode(false); setPoolSel(new Set()) }}>取消</button>
+              </>
+            ) : (
+              <>
+                <AsyncButton
+                  className="btn btn-sm"
+                  onClick={onRefreshMarket}
+                  pendingText="刷新中…（约20秒）"
+                  title="强制重拉东财全市场表，覆盖当天新上市基金"
+                >
+                  <Icon.refresh className="ico" /> 刷新市场
+                </AsyncButton>
+                <button className="btn btn-sm btn-danger" onClick={() => setPoolSelMode(true)} disabled={!fundItems.length}>
+                  删除
+                </button>
+              </>
+            )}
+          </div>
         }
       >
         <div className="muted cell-note" style={{ lineHeight: 1.7, marginBottom: 10 }}>
@@ -206,15 +287,19 @@ export default function Trade() {
                         )}
                       </div>
                     </div>
-                    <AsyncButton
-                      className="btn btn-sm btn-primary"
-                      style={{ flex: '0 0 auto' }}
-                      disabled={inPool}
-                      onClick={() => onAddFund(f.code, f.name)}
-                      pendingText="添加中…"
-                    >
-                      {inPool ? '已关注' : '添加'}
-                    </AsyncButton>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '0 0 auto' }}>
+                      <button className="btn btn-sm" onClick={() => onBuy(f.code)} title="直接下单买入这只基金">
+                        <Icon.plus className="ico" /> 购买
+                      </button>
+                      <AsyncButton
+                        className="btn btn-sm btn-primary"
+                        disabled={inPool}
+                        onClick={() => onAddFund(f.code, f.name)}
+                        pendingText="添加中…"
+                      >
+                        {inPool ? '已关注' : '添加'}
+                      </AsyncButton>
+                    </div>
                   </div>
                 </div>
               )
@@ -230,6 +315,15 @@ export default function Trade() {
             {fundItems.map((f) => (
               <div className="list-item" key={f.code} style={{ padding: '9px 13px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                  {poolSelMode && (
+                    <input
+                      type="checkbox"
+                      aria-label={`选择 ${f.name || f.code}`}
+                      checked={poolSel.has(f.code)}
+                      onChange={() => togglePool(f.code)}
+                      style={{ flex: '0 0 auto', width: 16, height: 16 }}
+                    />
+                  )}
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <strong style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name || f.code}</strong>
                     <span className="mono muted cell-note" style={{ display: 'block', marginTop: 2 }}>{f.code}</span>
@@ -264,19 +358,32 @@ export default function Trade() {
         title="订单"
         kicker="ORDERS"
         right={
-          <div style={{ display: 'flex', gap: 8 }}>
-            <ExportButton rows={orderRows} fileName="订单记录" sheetName="订单" notify={notify} />
-            <button className="btn btn-sm btn-primary" onClick={() => setOrderOpen(true)}>
-              <Icon.plus className="ico" /> 下单
-            </button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {orderSelMode ? (
+              <>
+                <label className="muted cell-note" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={allOrderChecked} onChange={(e) => setOrderAll(e.target.checked)} /> 全选
+                </label>
+                <button className="btn btn-sm btn-danger" onClick={doDeleteOrders} disabled={!orderSel.size}>
+                  删除选中（{orderSel.size}）
+                </button>
+                <button className="btn btn-sm" onClick={doCancelOrders} disabled={!orderSel.size}>
+                  取消下单（{orderSel.size}）
+                </button>
+                <button className="btn btn-sm" onClick={() => { setOrderSelMode(false); setOrderSel(new Set()) }}>取消</button>
+              </>
+            ) : (
+              <button className="btn btn-sm btn-danger" onClick={() => setOrderSelMode(true)} disabled={!orderItems.length}>删除</button>
+            )}
           </div>
         }
       >
-        {!orderItems.length && <EmptyState title="暂无订单" hint="点「下单」买入，或去「持仓」赎回" />}
+        {!orderItems.length && <EmptyState title="暂无订单" hint="在上方「交易池」搜索基金点「购买」下单，或去「模拟持仓」赎回" />}
         {orderItems.length > 0 && (
           <table className="table">
             <thead>
               <tr>
+                {orderSelMode && <th style={{ width: 34 }} aria-label="选择" />}
                 <th>基金</th>
                 <th>方向</th>
                 <th className="right">金额/份额</th>
@@ -288,6 +395,17 @@ export default function Trade() {
             <tbody>
               {orderItems.map((o) => (
                 <tr key={o.order_id}>
+                  {orderSelMode && (
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`选择订单 ${o.order_id}`}
+                        checked={orderSel.has(o.order_id)}
+                        onChange={() => toggleOrder(o.order_id)}
+                        style={{ width: 16, height: 16 }}
+                      />
+                    </td>
+                  )}
                   <td>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <strong>{o.fund_name || o.fund_code}</strong>
@@ -321,7 +439,7 @@ export default function Trade() {
         )}
       </Card>
 
-      <OrderModal open={orderOpen} onClose={() => setOrderOpen(false)} onSubmit={placeOrder} notify={notify} />
+      <OrderModal open={orderOpen} onClose={() => setOrderOpen(false)} onSubmit={placeOrder} notify={notify} initialCode={orderCode} />
 
       <ConfirmDialog
         open={!!cancelConfirm}

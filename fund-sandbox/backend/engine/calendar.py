@@ -40,7 +40,7 @@ def _redeem_arrival_days(category: str = "") -> int:
 
     为什么不写死在代码里：各品类清算周期差异极大（货币 T+1、纯债 T+2、混合/股票/指数
     T+3、QDII T+5），且具体以基金合同为准。写死会导致改 config 不生效，
-    违反「规则来源：config/config.toml 才是权威」。
+    违反「规则来源约定：config/config.toml 才是权威`。
 
     单一来源：arrival_date_by_category() 与 arrival_date() 共用本函数，避免各写一套走偏。
     """
@@ -133,10 +133,8 @@ class TradeCalendar:
     def _load_cache(self) -> bool:
         """从本地缓存加载（**带新鲜度检查**）。
 
-        ⚠️原实现只要「条数 ≥100」就采信 —— 而 `load()` 的 docstring 写的是
-        「网络优先、缓存兜底」，实际却是「缓存优先且不看时效」，**注释与实现不符**。
-        风险：跨年后旧缓存会把新一年的交易日判错（把今年的交易日当非交易日），且**无任何提示**。
-        现加时效上限：`updated_at` 超过 `max_cache_age_days` 天的缓存不再直接采信，转走网络刷新
+        缓存必须**带时效**：`updated_at` 超过 `max_cache_age_days` 天的缓存不再直接采信，转走网络刷新。
+        风险：跨年后旧缓存会把新一年的交易日判错（把今年的交易日当非交易日），且无任何提示。
         （网络也不可用时仍会落到 `weekend_fallback` 降级，并在界面上标 `degraded`）。
         """
         if not self.cache_path.exists():

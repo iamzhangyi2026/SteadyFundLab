@@ -142,6 +142,17 @@ def detect_style_drift(
         "analysis", "drift_warn_pct", 50.0
     )
 
+    # 没有行业配置数据时不做漂移判断：此时 actual 恒为 0%，但那是「没数据」而不是
+    # 「名不副实」。否则界面会出现「暂无行业配置数据 + 名实不符」这种自相矛盾的展示
+    # （ETF 联接、债券型基金等本来就不披露个股行业配置）。
+    if not allocation:
+        return {
+            "claimed_industry": None,
+            "drifted": False,
+            "actual_pct": None,
+            "note": "无行业配置数据，不做漂移判断",
+        }
+
     claimed = None
     keywords: list[str] = []
     for h in hints:
@@ -287,7 +298,7 @@ if __name__ == "__main__":
         print(f"    漂移检测: {drift['note']}")
 
 
-# ===== 辅助函数 =====
+# ===== 持仓辅助函数 =====
 
 def _latest_nav(conn, fund_code: str) -> float:
     """最新**单位**净值；查不到返回 0.0。
@@ -307,16 +318,23 @@ def get_positions(conn) -> list[dict]:
     """当前持仓（**按基金聚合**），供 /api/positions、/api/fund/{code}、/api/exposure 使用。
 
     口径：活跃批次（remaining_shares > 0）汇总 + 最新单位净值算市值。
-    返回每条含 `code` / `fund_name` / `category` / `shares` / `cost` /
-    `current_nav` / `current_value`。
+    返回每条含基金身份、申购状态、剩余份额、按剩余比例分摊的成本和最新单位净值市值。
     """
     rows = conn.execute(
         """
         SELECT l.fund_code,
                f.name,
                f.category,
+               f.is_qdii,
+               f.min_purchase,
+               f.purchase_limit,
+               (SELECT fs.purchase_status FROM fund_status fs
+                WHERE fs.fund_code = l.fund_code
+                ORDER BY fs.status_date DESC, fs.id DESC LIMIT 1) AS purchase_status,
                SUM(l.remaining_shares) AS shares,
-               SUM(l.cost_amount)      AS cost
+               SUM(CASE WHEN l.shares > 0
+                        THEN l.cost_amount * l.remaining_shares / l.shares
+                        ELSE 0 END) AS cost
         FROM lots l
         LEFT JOIN funds f ON f.code = l.fund_code
         WHERE l.status = 'active' AND l.remaining_shares > 0
@@ -332,6 +350,10 @@ def get_positions(conn) -> list[dict]:
             "code": r["fund_code"],
             "fund_name": r["name"] or "",
             "category": r["category"] or "",
+            "is_qdii": bool(r["is_qdii"]),
+            "min_purchase": r["min_purchase"],
+            "purchase_limit": r["purchase_limit"],
+            "purchase_status": r["purchase_status"],
             "shares": round(shares, 4),
             "cost": round(float(r["cost"] or 0), 2),
             "current_nav": round(nav, 4),

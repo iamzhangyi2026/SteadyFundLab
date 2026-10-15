@@ -40,9 +40,9 @@ export default function DonutChart({ data = [], height = 240, unit = '', label =
       itemWidth: 10,
       itemHeight: 10,
       itemGap: 9,
-      // 图例是看懂环形图的唯一依据，文字用 --text-soft 同色保证可读
-      // 行业名很长（如「电力、热力、燃气及水生产和供应业」17 字），
-      // 不限宽时图例左缘会侵入圆环区域 → 实测反馈「字压住圆圈」。
+      // 图例是看懂环形图的唯一依据，旧值 #6b7280 偏浅，提到 --text-soft 同色
+      //  加限宽+截断：行业名很长（如「电力、热力、燃气及水生产和供应业」17 字），
+      // 不限宽时图例左缘会侵入圆环区域，需限制最大宽度。
       // 限宽后图例宽度固定，不再随名字长度挤压圆环；完整名称见 tooltip / 卡片内 TOP 行业列表。
       textStyle: {
         color: '#4a5160',
@@ -54,10 +54,15 @@ export default function DonutChart({ data = [], height = 240, unit = '', label =
     series: [
       {
         type: 'pie',
-        // center 与 app.css 的 `.donut-center { left }` 是硬编码耦合：
-        // 调整此处 radius / center 时须同步改 CSS，否则中心文字会偏离圆环。
-        radius: ['38%', '54%'],
-        center: ['32%', '50%'],
+        //  调整（三轮）：
+        //   ① 原 ['56%','80%'] 外径过大 → 圆环右缘压到右侧图例文字
+        //   ② ['42%','62%'] 间隙仅约 3px，视觉上仍像贴着 → 再收并左移
+        //   ③ 内径 38% 时中孔偏小，中心金额（28px）压到圆环上 → 内径提到 44% 放大中孔，
+        //      并把整个圆环再向左移（center 32% → 26%），给中心文字留出空间。
+        // ⚠️ center 与 app.css 的 `.donut-center { left }` 是**硬编码耦合**，
+        //    改 center 必须同步改 CSS，否则中心文字会偏离圆环（center 与 CSS 半径需同步调整）。
+        radius: ['44%', '60%'],
+        center: ['26%', '50%'],
         avoidLabelOverlap: true,
         itemStyle: { borderColor: '#fff', borderWidth: 2 },
         label: { show: false },
@@ -77,6 +82,9 @@ export default function DonutChart({ data = [], height = 240, unit = '', label =
 
   const top = [...data].sort((a, b) => (b.value || 0) - (a.value || 0))[0]
   const showCenter = centerLabel || centerValue != null
+  const centerText = centerValue != null ? fmt(centerValue) : ''
+  // 位数越多字号越小：金额变大（如 ¥1,234,567.89）时也不会越出中孔、横向压到圆环
+  const valueFontSize = centerText.length >= 14 ? 12 : centerText.length >= 12 ? 14 : centerText.length >= 10 ? 16 : 18
   return (
     <div
       role="img"
@@ -86,7 +94,7 @@ export default function DonutChart({ data = [], height = 240, unit = '', label =
       <ReactECharts option={option} style={{ height }} notMerge lazyUpdate />
       {showCenter && (
         <div className="donut-center" aria-hidden="true">
-          {centerValue != null && <div className="donut-center-value">{fmt(centerValue)}</div>}
+          {centerValue != null && <div className="donut-center-value" style={{ fontSize: valueFontSize }}>{centerText}</div>}
           {centerLabel && <div className="donut-center-label">{centerLabel}</div>}
         </div>
       )}

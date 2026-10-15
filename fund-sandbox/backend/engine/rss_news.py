@@ -5,13 +5,13 @@
 只服务总览「最新资讯」，与分析页「资讯流」(news_feed, 基金公告+重仓股) 是两套数据，
 互不混用。本模块不做任何交易/分析判断，只负责「订阅 RSS → 落库」这一件事。
 
-数据源（均为实测验证可用的官方/代理 RSS，后续新增须先 live 抓取确认 entries>0）：
+数据源（实测验证「还活着」的官方/代理 RSS，后续新增均须先 live 抓取确认 entries>0）：
   - 中国新闻网财经  https://www.chinanews.com.cn/rss/finance.xml  （主力，纯财经，UTF-8，200/30条）
   - 36氪            https://www.36kr.com/feed                      （科技财经，200/30条）
   - 日经中文网(FeedX代理)  https://feedx.net/rss/nikkei.xml        （亚太宏观/市场，中文，200/20条）
 已死/不可用（不采用）：新浪财经、华尔街见闻、雪球、财新、证券时报、第一财经、经济观察网 RSS 均 404；
   Reuters 原生 SSL EOF；RSSHub 公共实例（财联社电报/热门、金十、东方财富研报、央视财经等）全线 403。
-能抓但「原文读不了」，对交易决策无价值，已移除：
+能抓但「原文读不了」，对交易决策无价值，故移除：
   - FT中文网           https://www.ftchinese.com/rss/news           （站点打不开，付费墙）
   - Bloomberg Markets  https://feeds.bloomberg.com/markets/news.rss （点开要注册才能看，且是英文）
   准则：RSS 只给标题+导语，正文必须跳原文；源站自己都读不了的新闻留着只占版面，不接。
@@ -79,8 +79,9 @@ FEEDS = [
     {"url": "https://www.wto.org/library/rss/latest_news_e.xml", "name": "WTO News"},
 ]
 
-# ⚠️ 源清单曾一度缩减，
-# 既定两条：① 能抓到（entries>0）② 原文能读。
+# 源清单覆盖多个站点；
+# 选取准则：
+# ① 能抓到（entries>0）② 原文能读。
 #   实测通过：中新网时政/世界 30、新华网财经 300、人民网财经 100、CNBC 30、
 #            MarketWatch 10（301 重定向，feedparser 自动跟随）、Investing 10、UN 30、WTO 10、
 #            Yahoo 19（原 `finance.yahoo.com/news/rssindex` 已 404，改用 `feeds.finance.yahoo.com`）
@@ -242,7 +243,7 @@ def start_background() -> None:
 def _loop() -> None:
     """后台线程主循环：立即抓一次，之后每 FETCH_INTERVAL 秒抓一次。
 
-    本循环现在负责**整个资讯抓取桶**（RSS + 盘中快讯），
+     扩展：本循环现在负责**整个资讯抓取桶**（RSS + 盘中快讯），
     两者都落 `market_news`。**先快讯后 RSS** —— 因为事件提取挂在 RSS 抓取末尾，
     这样一次循环里快讯的新条目也能被同一轮提取覆盖，不必跑两遍。
 

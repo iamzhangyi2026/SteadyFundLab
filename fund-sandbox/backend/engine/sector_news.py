@@ -42,7 +42,7 @@ def refresh_sector_news(
     - `board_type="concept"`：抓概念板块（须传 `concept_names`；调用方按**新闻热度**筛 Top N，
       见 `refresh_all_boards` —— 同花顺 375 个概念全量抓要 5 分钟）
 
-    ⚠️原函数签名无 `board_type`，却调用
+    原函数签名无 `board_type`，却调用
     `fetch_boards(board_type="industry")` → **TypeError 被 except 吞掉**，
     板块刷新恒失败（数据停在 09-19）；概念侧完全无抓取代码。
     """
@@ -62,9 +62,8 @@ def refresh_sector_news(
                     "hot_rank, news_title, news_url, news_source, news_summary, fetched_at, board_type) "
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
-                        # ⚠️`fetch_boards` 返回的键是 board_name / board_code /
-                        # main_net_inflow，原代码却取 sector / net_inflow → **全取空**，
-                        # 结果 fetched=90 但几乎全部 INSERT 失败（saved 恒 1）。
+                        # `fetch_boards` 返回的键是 board_name / board_code /
+                        # main_net_inflow，取值时必须用这些键（用 sector / net_inflow 会全取空）。
                         str(b.get("board_name", "") or b.get("sector", "")),
                         str(b.get("board_code", "")),
                         float(b.get("change_pct", 0) or 0),
@@ -101,7 +100,7 @@ def hot_concept_names(conn: sqlite3.Connection, limit: int = 10, days: int = 7) 
     用它会造成「鸡生蛋」；直接用标题匹配更稳。
 
     长名优先匹配（先试「固态电池」再试「电池」），每条标题最多取 3 个概念
-    —— 与 `infer_concepts` 的设计一致。
+    —— 与 09-17 `infer_concepts` 的设计一致。
     """
     try:
         from ..data.fetcher import fetch_concept_name_list

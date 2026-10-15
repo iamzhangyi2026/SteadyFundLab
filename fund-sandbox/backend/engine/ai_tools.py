@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-fund-sandbox AI工具集成
+fund-sandbox AI工具集成（脱敏版）
 - 基金分析工具
 - 新闻摘要工具
 - 筛选工具
@@ -107,8 +107,9 @@ async def _analyze_fund(params: dict) -> dict:
 请给出简洁的分析报告。"""
     
     content = await simple_chat(prompt)
-    # 固定输出 "tool": "analyze_fund"；不能引用 `tool_name`，
-    # 因为 `tool_name` 是 `execute_ai_tool` 的参数，不在本函数作用域内（引用即 NameError）。
+    # 此处固定写 "tool": "analyze_fund"（tool_name 是上层传入变量，不应回写）
+    # `execute_ai_tool(tool_name, params)` 的参数，**不是本函数的**，
+    # 进这个函数就是 NameError（该工具从来没跑通过）。
     return {
         "tool": "analyze_fund",
         "fund_code": fund_code,

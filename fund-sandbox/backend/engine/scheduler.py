@@ -7,15 +7,10 @@
 3. 交易时段按间隔巡检：检查纪律线、罚期到期、风控
 4. 刷新调度器自己的心跳（注意：这**不代表 AI 在线**）
 
-关于第 3 条的 AI 在线/离线分流
-------------------------------
-    AI 在线  → 巡检只做「提醒」，不自动交易，决策权归 AI
-    AI 离线  → 巡检升格为「决策」，由规则引擎按纪律线自主交易
-
-这个分流由 coordinator 判定，本模块只负责按时触发，不做判断。
+巡检始终只记录提醒；AI 在线/离线状态不会改变交易决策归属。
 
 为什么用简单的 while + sleep 而不是 APScheduler：
-    调度频率很低（一天一次全量 + 半小时一次巡检），
+    需求很简单（一天一次全量 + 半小时一次巡检），
     引入调度框架只会多一个依赖和一层抽象。
     用标准库 threading 足够，出问题也容易排查。
 """
@@ -62,12 +57,14 @@ class Scheduler:
         self.refresh_on_startup = get("runtime", "refresh_on_startup", True)
         # 全市场申购状态同步间隔（秒）：申购状态随时在变，需不定时主动刷新
         self.purchase_sync_interval = get("runtime", "purchase_sync_minutes", 30) * 60
-        # 板块行情同步间隔
+        # 板块行情同步间隔（缺失会导致板块数据停更）
         self.sector_sync_interval = get("runtime", "sector_sync_minutes", 15) * 60
         # 政府宏观数据（月频/季频，6 小时查一次足够）
         self.macro_sync_interval = get("runtime", "macro_sync_hours", 6) * 3600
         # 分红处理（每日一次，**只处理持仓基金**，不抓全市场）
         self.dividend_sync_interval = get("runtime", "dividend_sync_hours", 24) * 3600
+        # 资讯流（news_feed：持仓基金公告 + 重仓股新闻）抓取间隔（小时）
+        self.news_feed_sync_interval = get("runtime", "news_feed_sync_hours", 24) * 3600
 
     # ---------------------------------------------------------------- 控制
 
@@ -99,6 +96,7 @@ class Scheduler:
         last_sector_sync = 0.0
         last_macro_sync = 0.0
         last_dividend_sync = 0.0
+        last_news_feed_sync = 0.0
         try:
             if self.refresh_on_startup:
                 print("[调度器] 启动即刷新一次")
@@ -121,6 +119,12 @@ class Scheduler:
                     last_macro_sync = time.time()
                 except Exception as e:  # noqa: BLE001
                     print(f"[调度器] 启动同步宏观数据出错：{type(e).__name__}: {e}")
+                # 启动即抓一次持仓基金的公告 / 重仓股新闻（写 news_feed，只增量不删旧）
+                try:
+                    self._sync_news_feed(conn)
+                    last_news_feed_sync = time.time()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[调度器] 启动抓取资讯流出错：{type(e).__name__}: {e}")
                 # 启动即处理一次持仓分红
                 try:
                     self._sync_dividends(conn)
@@ -165,6 +169,14 @@ class Scheduler:
                         last_dividend_sync = now
                 except Exception as e:  # noqa: BLE001
                     print(f"[调度器] 处理分红出错：{type(e).__name__}: {e}")
+                # 定时抓持仓基金的公告 / 重仓股新闻（写入 news_feed，只增量不删旧）
+                try:
+                    now = time.time()
+                    if now - last_news_feed_sync >= self.news_feed_sync_interval:
+                        self._sync_news_feed(conn)
+                        last_news_feed_sync = now
+                except Exception as e:  # noqa: BLE001
+                    print(f"[调度器] 抓取资讯流出错：{type(e).__name__}: {e}")
                 # 每 60 秒醒一次检查是否该干活
                 time.sleep(60)
         finally:
@@ -204,7 +216,8 @@ class Scheduler:
     def _sync_sector_news(self, conn=None) -> None:
         """定时同步板块行情（行业 + 概念）到 `sector_news`。
 
-        行业与概念两侧都在此同步写入 `sector_news`。
+         板块行情同步调度：缺失会导致板块数据停更；
+        概念侧更是连抓取代码都没有（`board_type` 字段在、写入方无）。
         """
         try:
             from . import sector_news as _sector_news
@@ -223,7 +236,7 @@ class Scheduler:
     def _sync_macro(self, conn=None) -> None:
         """定时抓政府宏观数据（CPI/PPI/GDP/M2/PMI/社融）并落 `market_news`。
 
-        公共数据一次性抓取后写入 `market_news`。
+        宏观数据共 6 项，逐接口拉取后合并写入 `market_news`。
         """
         try:
             from . import macro_data as _macro
@@ -238,9 +251,8 @@ class Scheduler:
     def _sync_dividends(self, conn=None) -> None:
         """定时处理持仓基金的分红（公告 → 净值算金额 → 记账）。
 
-        ⚠️ `process_held_dividends` 在 `scheduler` 里**完全没有调用点** ——
-        今天早些时候的留痕写着"调度器已加每日一次分红处理、实测 5 条记账"，
-        但库里 `dividends` 表曾长期停更，接线补齐后恢复。
+        `process_held_dividends` 在 `scheduler` 里**完全没有调用点** ——
+        需要在调度器内每日调用一次分红处理，否则除息不会被记账。
         后果不只是"钱没记账"：除息会被 `detect_dividends` 当成单日暴跌，
         **污染回撤与波动率**，进而让筛选规则（max_dd<50%/30%）和纪律线提醒误判。
         """
@@ -256,6 +268,114 @@ class Scheduler:
             )
         except Exception as e:  # noqa: BLE001
             print(f"[调度器] 分红处理失败：{type(e).__name__}: {e}")
+
+    def _sync_news_feed(self, conn=None) -> None:
+        """定时抓**持仓基金**的公告 / 重仓股新闻，写入 news_feed（只增量，不删旧）。
+
+        按真实持仓抓取，全部 INSERT OR IGNORE（旧数据后续还要用于总结分析，
+        一条都不能删）。
+        """
+        try:
+            from . import news_collector as _nc
+
+            conn = conn or self.conn
+            r = _nc.refresh_news_feed(conn)
+            print(
+                f"[调度器] 资讯流抓取完成：持仓 {r.get('funds', 0)} 只、"
+                f"公告新增 {r.get('announce', 0)}、重仓股新闻新增 {r.get('stock_news', 0)}"
+                + (f"（{r.get('note')}）" if r.get("note") else "")
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[调度器] 资讯流抓取失败：{type(e).__name__}: {e}")
+
+    def _tracked_codes(self, conn=None) -> list[str]:
+        """要长期保持资料新鲜的基金 = **持仓(lots) ∪ 关注(pool)** 的并集。
+
+        仅遍历关注池时，持仓基金的净值与详细资料不会被刷新；
+        故需取「持仓 ∪ 关注」的并集。
+
+        项目口径是「持仓 > 关注」，两者都该抓，故取并集后逐只补齐：
+        历史净值（交叉验证）、前十大重仓股（落 fund_holdings）、行业配置（缓存）。
+        """
+        conn = conn or self.conn
+        held = {
+            r["fund_code"]
+            for r in conn.execute(
+                "SELECT DISTINCT fund_code FROM lots WHERE remaining_shares > 0"
+            ).fetchall()
+        }
+        pool = {f["code"] for f in fund_pool.pool_funds(conn)}
+        return sorted(held | pool)
+
+    def _fetch_and_save_holdings(self, conn, code: str) -> int:
+        """按最近几个报告期倒序试抓前十大重仓股并落库（仅保留 6 位 A 股代码）。"""
+        from datetime import date
+        from backend.data import fetcher
+        from . import holdings as _holdings
+
+        today = date.today()
+        periods: list[str] = []
+        for y in (today.year, today.year - 1):
+            periods += [f"{y}0630", f"{y}0331", f"{y}1231"]
+        for rd in periods:
+            try:
+                hs = fetcher.fetch_holdings(code, rd)
+            except Exception:  # noqa: BLE001
+                hs = []
+            if not hs:
+                continue
+            kept = [
+                h for h in hs
+                if (str(h.get("stock_code") or "").strip().isdigit()
+                     and len(str(h.get("stock_code")).strip()) == 6)
+            ][:10]
+            if kept:
+                return _holdings.save_holdings(conn, code, kept, "em_portfolio_hold")
+        return 0
+
+    def _sync_fund_profile(self, conn, code: str) -> None:
+        """补齐单只基金的「详细资料」：行业配置（缓存）+ 前十大重仓股（落库）。
+
+        缺数据才联网，避免每日重复抓取被源站限流；单只失败不影响其他基金。
+        仅在 `_refresh` 的逐只循环里被调用（每日 20:00 + 启动即刷新均覆盖）。
+        """
+        from backend.data import fetcher
+        from . import analysis as _analysis
+
+        # 行业配置：分析页「持仓穿透·行业暴露」依赖它；缓存 24h，这里主动刷新缓存。
+        name = code
+        try:
+            row = conn.execute(
+                "SELECT name FROM funds WHERE code=?", (code,)
+            ).fetchone()
+            if row and row["name"]:
+                name = row["name"]
+            _analysis.exposure_for(conn, code, name)
+        except Exception as e:  # noqa: BLE001
+            try:
+                fetcher.record_health(
+                    conn, "exposure", "industry", "failed", 0,
+                    f"{code} 行业配置抓取异常：{type(e).__name__}: {e}",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        # 前十大重仓股：缺数据才抓（季报变化慢，已有则不重复拉）
+        try:
+            has = conn.execute(
+                "SELECT 1 FROM fund_holdings WHERE fund_code=? LIMIT 1", (code,)
+            ).fetchone()
+            if not has:
+                self._fetch_and_save_holdings(conn, code)
+        except Exception as e:  # noqa: BLE001
+            try:
+                fetcher.record_health(
+                    conn, "fund_holdings", "holdings", "failed", 0,
+                    f"{code} 重仓股抓取异常：{type(e).__name__}: {e}",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
 
     def _sync_purchase_status(self, conn=None) -> None:
         """定时同步全市场基金申购状态（开放申购 / 限大额 / 暂停申购 / 封闭期）。
@@ -281,7 +401,7 @@ class Scheduler:
             print(f"[调度器] 申购状态同步完成：{n} 只")
             # 把真实起购/日限回写 funds 表快照（仅 active 基金）：DB 快照只在
             # akshare 拿不到该基金时作下单校验回退，回退值也必须是同步后的真值，
-            # 不能停在添加时的旧值（旧版还被卫生地板抬过，如 270042 落库 10 实际 5）。
+            # 不能停在添加时的旧值。
             try:
                 # 不再排除 delisted —— `status` 是**池状态**（active/delisted），
                 # 与「申购状态」无关；原排除逻辑让 delisted 基金永远查不到状态（前端显示「未知」）。
@@ -292,7 +412,7 @@ class Scheduler:
                     if not pi:
                         continue
                     # 落库到 fund_status —— 前端 /api/funds 从这里取申购状态；
-                    # 原实现只把结果写 data_health，**没落库** → fund_status 长期只有 36 条（09-28）。
+                    # 同时写 data_health 供体检页查看。
                     try:
                         from . import status as _status
 
@@ -390,8 +510,8 @@ class Scheduler:
 
             conn = conn or self.conn
             refreshed = 0
-            for f in fund_pool.pool_funds(conn):
-                code = f["code"]
+            # 持仓 ∪ 关注并集：仅遍历关注池时持仓基金不会被刷新。
+            for code in self._tracked_codes(conn):
                 try:
                     primary = fetcher.fetch_nav_em(code)
                     if not primary:
@@ -420,6 +540,11 @@ class Scheduler:
                     except Exception:  # noqa: BLE001
                         pass
                     print(f"[调度器] {code} 刷新异常：{type(e).__name__}: {e}")
+                # 详细资料（持仓 + 关注都要）：重仓股 + 行业配置，独立 try 不影响净值刷新。
+                try:
+                    self._sync_fund_profile(conn, code)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[调度器] {code} 详细资料同步异常：{type(e).__name__}: {e}")
 
             self._last_refresh_date = date.today()
             print(f"[调度器] 全量刷新完成：{refreshed} 只成功")
@@ -429,8 +554,7 @@ class Scheduler:
     def _check(self, conn, result: dict) -> None:
         """巡检：检查纪律线与罚期。
 
-        AI 在线 → 只记录提醒，不自动交易
-        AI 离线 → 交给规则引擎判断（本版记录建议，实际下单在确认后加）
+        AI 在线或离线都只记录纪律提醒；决策源始终是接管 AI。
 
         紧急停止开启时，直接跳过所有自动交易决策（定投/减仓/止损告警仍记录）。
         """
@@ -442,8 +566,8 @@ class Scheduler:
             result.setdefault("alerts", []).append("紧急停止已开启，自动交易暂停")
             print("[调度器] 紧急停止开启，本轮跳过自动交易")
             return
-        mode = coordinator.current_mode()
-        result["mode"] = mode
+        ai_online = coordinator.is_ai_online()
+        result["decision_source"] = coordinator.decision_source()
 
         # 1. 定投：金额固定的纪律性操作，**无论 AI 在线与否都自动执行**。
         #    它与灵活加仓不同——加仓金额由分析决定，定投金额不因行情改变。
@@ -463,7 +587,7 @@ class Scheduler:
             result.setdefault("errors", []).append(f"定投执行失败：{e}")
 
         # 2. 账户回撤止损（峰值法）。仅告警、不拦截、不暂停自动交易——
-        #    风控边界只是提醒；是否减仓由人或 AI 决定，
+        #    风控边界仅为提醒；是否减仓由人或 AI 决定，
         #    自动割肉往往割在低点。绝不调用 set_emergency_stop。
         stop = rules.check_account_stop(conn)
         result["stop"] = stop
@@ -516,10 +640,10 @@ class Scheduler:
                         "nav": nav_v,
                     }
                 )
-                if mode == "rule":
-                    print(f"[调度器] AI 离线，规则引擎建议：{msg} → {ln['action']}")
-                else:
+                if ai_online:
                     print(f"[调度器] 提醒（AI 在线，不自动执行）：{msg}")
+                else:
+                    print(f"[调度器] 提醒（AI 离线，不切换决策源）：{msg}")
 
             pen = rules.penalty_risk(conn, code, date.today())
             if pen.get("has_penalty_risk"):
@@ -614,7 +738,7 @@ if __name__ == "__main__":
     sch = Scheduler()
     r = sch.run_once()
     print(f"\n执行时间：{r['at']}")
-    print(f"生效模式：{r.get('mode', '（未到巡检时间）')}")
+    print(f"决策归属：{r.get('decision_source', '（未到巡检时间）')}")
     print(f"本轮动作：{r['actions'] or '无'}")
     for a in r.get("alerts", [])[:10]:
         print(f"  ⚠ {a}")

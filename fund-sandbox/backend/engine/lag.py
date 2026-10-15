@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-fund-sandbox 滞后信号检测引擎
+fund-sandbox 滞后信号检测引擎（脱敏版）
 - 检测估值洼地信号
 - 监控趋势反转
 """

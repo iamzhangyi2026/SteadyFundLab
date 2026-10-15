@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 基金费率计算（申购 / 赎回），离线安全。
-口径（来自 config/config.toml ）：
+口径（来自 config/config.toml）：
 - 外扣法申购：net = amount / (1 + fee_rate); fee = amount - net
 - 管理费/托管费已在净值日扣，不在本模块复算
 - 赎回费阶梯：from config [fee].redeem_tiers，命中第一条 max_holding_days >= holding_days
@@ -103,8 +103,8 @@ if __name__ == "__main__":
     from ..db.schema import get_connection
     c = get_connection()
     try:
-        print("calc_purchase(161725,1000):", calc_purchase("161725", 1000))
-        print("calc_redeem_fee(161725,1000,3):", calc_redeem_fee("161725", 1000, 3))
+        print("calc_purchase(000001,1000):", calc_purchase("000001", 1000))
+        print("calc_redeem_fee(000001,1000,3):", calc_redeem_fee("000001", 1000, 3))
         print("penalty_free_days():", penalty_free_days())
         print("redeem_tiers:", get_redeem_tiers())
     finally:

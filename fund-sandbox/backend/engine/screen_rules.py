@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-fund-sandbox 核心算法模块
+fund-sandbox 核心算法模块（脱敏版）
 - 筛选规则：分位、回撤、收益率计算
 - 数据来源：akshare + 东方财富
 """

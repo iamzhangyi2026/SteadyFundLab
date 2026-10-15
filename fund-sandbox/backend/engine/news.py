@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-fund-sandbox 新闻抓取引擎
+fund-sandbox 新闻抓取引擎（脱敏版）
 - 使用akshare获取财经新闻
 - RSS源抓取
 - 新闻分类和摘要
@@ -119,7 +119,7 @@ def save_news(conn: sqlite3.Connection, news_list: list[dict]) -> int:
 def _classify_news(text: str) -> str:
     """简单新闻分类。
 
-    与 `triage._CAT_KW` 同步扩充「公司行动」类词，避免同一批新闻
+     补：与 `triage._CAT_KW` 同步扩充「公司行动」类词，避免同一批新闻
     在写入路径（本函数）与修补路径（`triage._classify`）得到不同类别。
     ⚠️ 已知缺陷：兜底为 `market`，与 `triage._classify` 的 `other` 不一致。
     """

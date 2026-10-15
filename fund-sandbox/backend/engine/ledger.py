@@ -170,19 +170,24 @@ def position_summary(conn, fund_code: str, current_nav: float) -> dict:
     current_nav 由调用方按用途传入：纪律线应传**累计净值 acc_nav**。
     返回 {total_shares, total_cost, market_value, profit_pct}。
 
-    口径（按「纪律线用 acc_nav、市值/浮盈用 nav」的分工）：
+    口径（纪律线用 acc_nav、市值/浮盈用 nav）：
     - market_value = 份额 × current_nav（纪律线口径用累计净值）
     - profit_pct   = (current_nav − 成本累计净值) / 成本累计净值 × 100
       成本累计净值按各批次确认日查 nav_daily.acc_nav（无则回退 unit nav），
       再按份额加权 —— 这才是含分红再投的真实总收益，符合「纪律线用 acc_nav」。
     """
     rows = conn.execute(
-        "SELECT remaining_shares, cost_amount, cost_nav, confirm_date "
+        "SELECT shares, remaining_shares, cost_amount, cost_nav, confirm_date "
         "FROM lots WHERE fund_code=? AND status='active' AND remaining_shares>0",
         (fund_code,),
     ).fetchall()
     total_shares = sum(float(r["remaining_shares"]) for r in rows)
-    total_cost = sum(float(r["cost_amount"]) for r in rows)
+    # 部分赎回后只把剩余份额对应的成本计入持仓，避免继续使用整批原始成本。
+    total_cost = sum(
+        float(r["cost_amount"]) * float(r["remaining_shares"]) / float(r["shares"])
+        for r in rows
+        if float(r["shares"] or 0) > 0
+    )
     if total_shares <= 0:
         return {"total_shares": 0.0, "total_cost": 0.0, "market_value": 0.0, "profit_pct": 0.0}
 

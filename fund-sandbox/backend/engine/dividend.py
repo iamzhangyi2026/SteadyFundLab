@@ -203,7 +203,7 @@ def list_dividends(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
 get_dividends = list_dividends
 
 
-# ===== 拉分红公告（「分红方式/时间由基金公告定」） =====
+# =====  新增：拉分红公告（「分红方式/时间由基金公告定」） =====
 
 def fetch_dividend_announcements(fund_code: str) -> list[dict]:
     """拉取基金分红公告（东方财富），返回 [{ann_date, title, report_id}]。

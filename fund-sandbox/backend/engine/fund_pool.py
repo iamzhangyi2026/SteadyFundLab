@@ -1,8 +1,8 @@
 """基金自选池：搜索、抓取购买规则、抓取历史净值、合并配置池与用户添加池。
 
-为什么要单独抽这一层（来自实战教训）：
+为什么要单独抽这一层：
 
-1. 之前基金池只写在 config.toml 的 [[funds]] 里，且**完全没有抓取「购买起点」**。
+1. 基金池需要同时给出「购买起点」（最低申购金额）：
    真实世界很多基金有最低购买金额（1 元 / 10 元 / 100 元不等），
    不抓就可能在下单时才发现「低于起购金额」——这跟「限购」一样是真实约束，
    必须提前知道并拦在下单前。
@@ -11,7 +11,7 @@
    添加时应当「顺手」把购买规则和历史净值一起抓回来，
    否则加进来一只「没净值、没规则」的空壳基金，既不能看曲线也不能正确下单。
 
-数据源（akshare 实测验证）：
+数据源（以 akshare 实测为准，绝不凭记忆）：
     fund_name_em()        全市场场外基金清单（代码/简称/类型/拼音），用于搜索
     fund_purchase_em()    全市场购买配置（购买起点/日累计限额/申购状态/手续费），用于规则
     fetcher.fetch_nav_em  单只历史净值（单位/累计），复用已有落库逻辑
@@ -368,7 +368,7 @@ def pool_funds(conn: sqlite3.Connection) -> list[dict]:
             # 不回退配置旧值、不抬卫生地板，否则会带出固定的 10 元地板或 1e11
             m["min_purchase"] = pi.get("min_purchase")
             m["purchase_limit"] = pi.get("purchase_limit")
-            # 申购/赎回状态：前端 Trade/Positions 展示需要，之前缺失导致全部显示"状态未知"
+            # 申购/赎回状态：前端 Trade/Positions 展示需要，缺失会全部显示"状态未知"
             m["purchase_status"] = pi.get("purchase_status") or m.get("purchase_status")
             m["redeem_status"] = pi.get("redeem_status") or m.get("redeem_status")
         m["added"] = False
@@ -408,8 +408,8 @@ def held_position_funds(conn: sqlite3.Connection) -> list[dict]:
 
     与 pool_funds 的区别：这里只取「真持了仓的」，名字/起购从 funds 表 + 配置池取，
     **完全不碰全市场表（fund_name_em / fund_purchase_em）**。首屏账户页因此零 akshare
-    依赖，避免为「有持仓的几只基金」去串行拉 2.7 万只的全市场表（曾导致 /api/account
-    首次 22 秒）。只保留 total_shares>0 的基金。
+    依赖，避免为「有持仓的几只基金」去串行拉 2.7 万只的全市场表（会让 /api/account
+    首次响应达数十秒）。本函数只保留 total_shares>0 的基金。
     """
     rows = conn.execute(
         "SELECT DISTINCT fund_code FROM lots WHERE remaining_shares > 0"
@@ -486,7 +486,6 @@ def add_fund(conn: sqlite3.Connection, fund_code: str) -> dict:
 
     # 2) 购买规则——实时抓取为准（「所有的都要同步真实的，不是固定」）：
     #    落库的是真实快照，配置显式值只在 akshare 拿不到该基金时兜底。
-    #    （旧逻辑配置优先，曾把 270042 真实的 5 元按「疑似脏数据」认知覆盖掉。）
     pi = lookup_purchase(fund_code) or {}
     min_purchase = pi.get("min_purchase")
     purchase_limit = pi.get("purchase_limit")

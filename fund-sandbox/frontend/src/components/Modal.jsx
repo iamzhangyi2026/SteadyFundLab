@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
@@ -57,7 +58,9 @@ export default function Modal({ open, title, onClose, children, width }) {
 
   if (!open) return null
 
-  return (
+  // 渲染到 body：`.page` 带 transform 动画，会成为 position:fixed 的包含块，
+  // 弹窗遮罩会被限制在页面区域内、随窗口变小而错位。挂到 body 下即始终相对视口。
+  return createPortal(
     <div className="modal-overlay" onMouseDown={onClose}>
       <div
         className="modal"
@@ -77,6 +80,7 @@ export default function Modal({ open, title, onClose, children, width }) {
         </header>
         <div className="modal-body">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

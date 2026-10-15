@@ -1,20 +1,7 @@
-"""每日决策简报（14:30 钩子）。
+"""每日决策简报（14:30）。
 
-为什么需要这个
---------------
-交易决策有时间窗口（15:00 截单），但对话里的 AI 不会一直在线。
-如果在 14:30 就把市场快照、持仓状态、约束条件整理好，再配上一个明确的问题
-（"今天的基金该怎么买？"），那么人一开对话，AI 读这份简报就能立刻作答。
-
-它把「AI 主动分析」变成「回答一个材料齐备的问题」——门槛低得多，
-也是当前技术条件下「唤醒 AI」最现实的形式：
-
-    定时备材料 → 桌面提醒人 → 人开对话 → AI 读简报 → 输出决策 → 执行
-
-真正的全自动（人不用开对话）需要接 LLM API 或平台定时任务能力，
-属于另一种部署形态，接口已预留，不影响本模块。
-
-简报不含任何模拟数据。抓不到就是抓不到，明确标注「无数据」。
+调度器汇总账户、持仓、市场和约束信息，供接管 AI 分析并形成交易决策。
+简报只提供真实数据与上下文，不触发交易；缺失数据明确标注为「无数据」。
 """
 
 from __future__ import annotations
@@ -31,7 +18,7 @@ from backend.engine import coordinator, ledger, rules, fund_pool
 BRIEFING_DIR = Path(__file__).resolve().parents[2] / "data" / "briefing"
 INTEL_DIR = Path(__file__).resolve().parents[2] / "intel"
 
-# 钩子触发时刻。14:30 留出 30 分钟给 AI 作答、人确认、赶在 15:00 截单前完成
+# 预留 30 分钟供接管 AI 分析并在 15:00 截单前完成决策流程。
 HOOK_TIME = "14:30"
 
 DEFAULT_QUESTION = "今天的基金该怎么买？"
@@ -124,8 +111,8 @@ def generate(conn: sqlite3.Connection, as_of: date | None = None,
         "as_of": as_of.isoformat(),
         "hook_time": HOOK_TIME,
         "question": question,
-        "mode": {
-            "effective": coord["effective_mode"],
+        "decision_source": {
+            "source": coord["decision_source"],
             "ai_online": coord["ai_online"],
             "idle_hours": coord["idle_hours"],
         },
@@ -152,8 +139,8 @@ def to_markdown(b: dict) -> str:
     L.append("")
     L.append(f"生成时间：{b['generated_at']}")
     L.append(
-        f"运行模式：{b['mode']['effective']}"
-        f"（AI {'在线' if b['mode']['ai_online'] else '离线'}）"
+        f"决策归属：{b['decision_source']['source']}"
+        f"（AI {'在线' if b['decision_source']['ai_online'] else '离线'}）"
     )
     L.append("")
     L.append("## 待决策问题")
@@ -255,7 +242,7 @@ if __name__ == "__main__":
     print("=" * 78)
     print(f"  Markdown: {md}")
     print(f"  JSON    : {js}")
-    print(f"  运行模式: {b['mode']['effective']}（AI {'在线' if b['mode']['ai_online'] else '离线'}）")
+    print(f"  决策归属: {b['decision_source']['source']}（AI {'在线' if b['decision_source']['ai_online'] else '离线'}）")
     print(f"  本月配额剩余: {b['capital']['remaining']:.0f} 元")
     print()
     print(to_markdown(b))

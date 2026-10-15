@@ -193,7 +193,8 @@ CREATE INDEX IF NOT EXISTS idx_div_fund ON dividends(fund_code, ex_date);
 """
 
 
-# board_daily 表已删除（全项目零引用）。
+# board_daily 表已移除（无读写代码引用）。
+# 该列已废弃，仅保留向后兼容。
 # 为什么不需要它：板块涨跌幅/主力净流入由 sector_news 承担（每轮留痕更完整），
 # 板块→基金的映射走「基金名称匹配」，不依赖 board_code；唯一独有的 PE 分位数据源已失效。
 
@@ -406,8 +407,9 @@ CREATE INDEX IF NOT EXISTS idx_plan_code ON dingtou_plan(fund_code);
 """
 
 
-# ===== 以下表定义从现有库导出补齐 =====
-# 保证「新建库」也能建出完整结构（不是只迁就当前这个库）。
+# ===== 数据健康与抓取状态相关表 =====
+# 记录各数据源的抓取/同步状态，便于事后发现接口异常。
+# 以保证「新建库」也能建出完整结构（不是只迁就当前这个库）。
 TABLES["analysis_log"] = """
 CREATE TABLE IF NOT EXISTS analysis_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -457,9 +459,9 @@ CREATE TABLE discipline_alerts (
     nav             REAL,                -- 触发时的（累计）净值
     triggered_at    TEXT NOT NULL,       -- 首次触发时间
     resolved_at     TEXT,                -- 自动消解时间：阈值不再触发时填（NULL=仍活跃）
-    ack             INTEGER NOT NULL DEFAULT 0  -- 1=已读（AI 看过），不影响任何交易逻辑
+    ack             INTEGER NOT NULL DEFAULT 0  -- 1=已读，不影响任何交易逻辑
 )
-;    -- 表定义从现有库导出补齐
+;    -- 抓取/同步状态记录表
 """
 
 TABLES["fund_fee"] = """
@@ -469,7 +471,7 @@ CREATE TABLE fund_fee (
     redeem_raw      TEXT,               -- 原始返回文本（便于人工核对，不丢证据）
     fetched_at      TEXT NOT NULL
 )
-;    -- 表定义从现有库导出补齐
+;    -- 抓取/同步状态记录表
 """
 
 TABLES["fx_rate"] = """
@@ -481,12 +483,12 @@ CREATE TABLE fx_rate (
     fetched_at  TEXT NOT NULL,
     PRIMARY KEY (pair, rate_date)
 )
-;    -- 表定义从现有库导出补齐
+;    -- 抓取/同步状态记录表
 """
 
 TABLES["meta"] = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)
-;    -- 表定义从现有库导出补齐
+;    -- 抓取/同步状态记录表
 """
 
 TABLES["news_triage"] = """
@@ -513,7 +515,7 @@ CREATE TABLE news_triage (
     first_pub_time  TEXT,                -- 事件最早发布时间
     processed_at    TEXT NOT NULL
 , impact_boards TEXT, created_by TEXT, impact_concepts TEXT, surprise TEXT)
-;    -- 表定义从现有库导出补齐
+;    -- 抓取/同步状态记录表
 """
 
 TABLES["position_health"] = """
@@ -537,7 +539,7 @@ CREATE TABLE position_health (
     created_at      TEXT NOT NULL,
     UNIQUE(fund_code, as_of)
 )
-;    -- 表定义从现有库导出补齐
+;    -- 抓取/同步状态记录表
 """
 
 TABLES["rule_change_log"] = """
@@ -549,7 +551,7 @@ CREATE TABLE rule_change_log (
     new_value   TEXT,
     detected_at TEXT NOT NULL
 )
-;    -- 表定义从现有库导出补齐
+;    -- 抓取/同步状态记录表
 """
 
 TABLES["sector_news"] = """
@@ -569,7 +571,7 @@ CREATE TABLE IF NOT EXISTS sector_news (
     fetched_at      TEXT NOT NULL, board_type TEXT DEFAULT 'industry',       -- 抓取时间
     UNIQUE(sector, fetched_at)
 )
-;    -- 表定义从现有库导出补齐
+;    -- 抓取/同步状态记录表
 """
 
 
@@ -680,7 +682,7 @@ if __name__ == "__main__":
     conn.close()
 
 
-# ===== 工具函数 =====
+# ===== 数据健康辅助工具函数 =====
 
 def get_db_path() -> Path:
     """返回当前数据库文件路径。

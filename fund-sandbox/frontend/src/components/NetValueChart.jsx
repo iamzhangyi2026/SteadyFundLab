@@ -3,7 +3,8 @@ import EmptyState from './EmptyState'
 
 // 通用净值/资产曲线图。categories=横轴标签，values=纵轴数值。
 // 滚轮缩放 + 拖拽平移、玻璃态 tooltip、净值线轻微发光。
-// 轴文字统一 #5b6675 / 12px，对比度满足 AA，日期和刻度清晰可读。
+// 轴文字统一 #5b6675 / 12px：旧值 #9aa0ab / 11px 在白底上约 2.5:1 对比度不足，
+// 达不到 AA，日期和刻度基本靠猜。
 const AXIS_TEXT = '#5b6675'
 
 export default function NetValueChart({

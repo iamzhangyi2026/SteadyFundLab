@@ -1,14 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '../store/useStore'
+import { apiGet } from '../store/api'
 import { money } from '../lib/format'
 import Modal from './Modal'
 
-// 人工下单 / 赎回弹窗。交易页与持仓页共用。
-// 两种模式：
-//   mode='purchase'（默认）：新建「购买订单」，类型下拉只有 买入 / 定投，绝不含赎回。
-//   mode='redeem'：对已持仓基金做赎回（卖出份额），仅从持仓操作菜单进入。
-// 设计依据：赎回不是购买订单——没买过就没有可赎的份额，故赎回只出现在持仓操作菜单，
-//           新建购买订单的下拉里不该出现「赎回」选项。
+// 交易页和持仓页共用下单弹窗。赎回只从持仓操作入口发起，避免对无持仓基金提交赎回。
 export default function OrderModal({ open, onClose, onSubmit, notify, initialCode = '', initialSide = 'buy', mode = 'purchase' }) {
   const isRedeem = mode === 'redeem'
   const makeBlank = () => ({
@@ -16,7 +12,6 @@ export default function OrderModal({ open, onClose, onSubmit, notify, initialCod
     type: 'buy', // purchase: 'buy'(一次性买入) | 'dingtou'(登记定投)
     side: isRedeem ? 'sell' : 'buy',
     amount: '',
-    purpose: 'buy',
     decision_source: 'human',
     reason: '',
   })
@@ -28,10 +23,10 @@ export default function OrderModal({ open, onClose, onSubmit, notify, initialCod
   const account = useStore((s) => s.account.data)
   const avail = account?.budget?.available
   const funds = useStore((s) => s.funds.data)
-  // 池内基金直接从 funds.data 取状态；池外（搜索买入）基金按 code 实时查轻量接口，
-  // 保证「只要是抓取的基金」暂停/限大额都能识别，不漏标。
+  // 池内基金复用已取状态；池外基金按代码查询，识别暂停申购和限额。
   const [purchaseInfo, setPurchaseInfo] = useState(null)
   useEffect(() => {
+    if (!open) return
     const code = form.fund_code
     if (!code) { setPurchaseInfo(null); return }
     const pf = (funds?.items || []).find((f) => f.code === code)
@@ -42,9 +37,10 @@ export default function OrderModal({ open, onClose, onSubmit, notify, initialCod
       .then((d) => { if (alive) setPurchaseInfo(d || null) })
       .catch(() => { if (alive) setPurchaseInfo(null) })
     return () => { alive = false }
-  }, [form.fund_code, funds])
-  // 赎回「当前持有 / 全部赎回」：从持仓 store 取（
-  // 没有它，用户想清仓只能自己去持仓页抄份额数再手填，容易抄错/填错。）
+  // 不监听 funds 的轮询对象，避免弹窗打开期间每次轮询都重复请求池外代码。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, form.fund_code])
+  // 显示当前份额并提供全额赎回快捷填入，减少手工抄写错误。
   const positions = useStore((s) => s.positions.data)
   const heldShares = isRedeem
     ? (positions?.items || []).find((p) => p.code === form.fund_code)?.shares ?? null
@@ -56,7 +52,10 @@ export default function OrderModal({ open, onClose, onSubmit, notify, initialCod
 
   // 每次打开都重置，避免上一次残留（含从持仓行带入的基金代码）
   useEffect(() => {
-    if (open) setForm(makeBlank())
+    if (open) {
+      setForm(makeBlank())
+      setShowAdvanced(false)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialCode, initialSide, mode])
 
@@ -72,6 +71,10 @@ export default function OrderModal({ open, onClose, onSubmit, notify, initialCod
       notify('金额超过可用预算', 'error')
       return
     }
+    if (!Number.isFinite(num) || num <= 0) {
+      notify('请输入大于 0 的有效金额或份额', 'error')
+      return
+    }
     const side = isRedeem ? 'sell' : 'buy'
     const purpose = isRedeem ? 'buy' : (form.type === 'dingtou' ? 'dingtou' : 'buy')
     setSubmitting(true)
@@ -84,10 +87,7 @@ export default function OrderModal({ open, onClose, onSubmit, notify, initialCod
         decision_source: form.decision_source,
         reason: form.reason,
       })
-      // 风控边界只是提醒：越界时订单照常提交，但要把提醒明确弹给用户
-      // ⚠️ 后端已把拒单改为抛 400（见 `api.py` 的 api_order），
-      // 但前端仍应主动判 `ok` —— 万一后端某天又变成「200 + {ok:false}」，
-      // 也不至于把"被拒"显示成"下单成功"。宁可多判一次，不可骗用户。
+      // 兼容旧版后端的 200 + {ok:false} 响应，避免把被拒订单提示为成功。
       if (r && r.ok === false) {
         notify('下单被拒绝：' + (r.reason || r.reject_reason || '请查看后端日志'), 'error')
       } else if (r && r.warnings && r.warnings.length) {
@@ -137,7 +137,7 @@ export default function OrderModal({ open, onClose, onSubmit, notify, initialCod
           >
             赎回（卖出份额）
           </div>
-          {/* ⚠️ 「当前持有」提示 + 「全部赎回」快捷按钮 */}
+          {/* 「当前持有」提示 + 「全部赎回」快捷按钮 */}
           {heldShares != null && (
             <div style={{ marginTop: 7, display: 'flex', alignItems: 'center', gap: 9, fontSize: 13 }}>
               <span className="muted">当前持有 {Number(heldShares).toFixed(4)} 份</span>
@@ -196,23 +196,14 @@ export default function OrderModal({ open, onClose, onSubmit, notify, initialCod
 
       {!isRedeem && (
         <button type="button" className="link-btn" onClick={() => setShowAdvanced((v) => !v)} style={{ marginBottom: 8 }}>
-          {showAdvanced ? '收起高级选项 ▲' : '高级选项（决策来源 / 理由）▼'}
+          {showAdvanced ? '收起高级选项 ▲' : '高级选项（操作理由）▼'}
         </button>
       )}
       {!isRedeem && showAdvanced && (
         <>
           <div className="field">
-            <label>决策来源</label>
-            <select value={form.decision_source} onChange={set('decision_source')}>
-              <option value="human">人工</option>
-              <option value="rule">规则引擎</option>
-              <option value="external">外部 AI</option>
-              <option value="llm">LLM</option>
-            </select>
-          </div>
-          <div className="field">
-            <label>决策理由（人工可留空）</label>
-            <textarea rows={2} value={form.reason} onChange={set('reason')} placeholder="非人工来源必填" />
+            <label>操作理由（可选）</label>
+            <textarea rows={2} value={form.reason} onChange={set('reason')} placeholder="记录这次操作的依据" />
           </div>
         </>
       )}

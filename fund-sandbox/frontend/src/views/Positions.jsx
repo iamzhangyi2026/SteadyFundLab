@@ -29,7 +29,7 @@ export default function Positions() {
   const planByCode = {}
   for (const p of dingtou?.items || []) planByCode[p.fund_code] = p
   // 关注列表：已加入交易池、但还没建仓的基金
-  // 关注列表加**搜索框** —— 关注一多就不用上下翻。
+  // 关注列表的**搜索框**：关注一多时便于快速定位。
   // 本地过滤：代码 / 名称 / 类型都能匹配（不调接口，纯前端，实时）。
   const [watchQuery, setWatchQuery] = useState('')
   const _watchAll = (funds?.items || []).filter((f) => f.added && !held.has(f.code))
@@ -80,13 +80,14 @@ export default function Positions() {
   const onDeletePlan = (p) => setPlanDelConfirm(p)
   const confirmDeletePlan = async () => {
     const p = planDelConfirm
-    setPlanDelConfirm(null)
     if (!p) return
     try {
       await deleteDingtouPlan(p.id)
+      setPlanDelConfirm(null)
       notify('已删除定投计划', 'success')
     } catch (e) {
       notify('删除失败：' + e.message, 'error')
+      throw e
     }
   }
 
@@ -250,7 +251,7 @@ export default function Positions() {
           </>
         ) : (
           <>
-            {/* ⚠️ 关注列表搜索框 */}
+            {/* 关注列表搜索框 */}
             <div className="field" style={{ marginBottom: 10 }}>
               <input
                 value={watchQuery}

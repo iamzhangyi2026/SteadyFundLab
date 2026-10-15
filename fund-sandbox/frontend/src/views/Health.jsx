@@ -76,7 +76,7 @@ export default function Health() {
         {!items.length && (
           <EmptyState
             title="暂无健康记录"
-            hint="健康记录在后台刷新数据或新增基金时自动写入。可以点下面的按钮手动触发一次。"
+            hint="刷新数据或新增基金时自动写入；也可手动触发一次。"
             action={
               <AsyncButton className="btn btn-primary btn-sm" onClick={onRefreshSource} pendingText="刷新中…">
                 刷新数据源

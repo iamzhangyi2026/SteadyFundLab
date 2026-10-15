@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-fund-sandbox LLM客户端
+fund-sandbox LLM客户端（脱敏版）
 - 不硬编码API密钥
 - 从加密配置读取密钥
 - 支持多模型路由

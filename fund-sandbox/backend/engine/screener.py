@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-fund-sandbox 基金池筛选引擎
+fund-sandbox 基金池筛选引擎（脱敏版）
 - 全量基金筛选
 - 候选标的排序
 """

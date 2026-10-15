@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-fund-sandbox FastAPI 主服务
-- 本机端口 8765（Electron 同源调用）
+fund-sandbox FastAPI 主服务（桌面端）
+- 端口 8765，仅绑 127.0.0.1（Electron 同源调用）
 - 接入全部引擎模块（真实世界规则：外扣法 / 赎回阶梯 / T+1 / 15:00 截单 / 只投场外）
 - 数据源失败自动降级，绝不抛 500（返回空/缺省，记录 data_health）
 """
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from contextlib import contextmanager
 from datetime import datetime, date
@@ -26,6 +27,7 @@ import uvicorn
 from ..db.schema import get_connection, get_db_path, init_db
 from ..log_setup import setup as log_setup
 from ..config import get, section, get_llm_config
+from .. import config as _config
 from .. import engine
 from ..engine import (
     fees, ledger, holdings, orders, portfolio, dividend, rules, status as fund_status,
@@ -33,6 +35,7 @@ from ..engine import (
     triage, sector_news, intel_collector, rss_news, macro_data, llm_pool,
     news_quality, event_key, board_alias, audit, active_news, flash_news, time_lag,
     screen_rules, calendar, llm_client, ai_tools, analysis, review, screener, lag, news, health,
+    news_collector,
 )
 from ..data import fetcher
 
@@ -71,7 +74,7 @@ def _now() -> str:
 # 应用初始化
 # ============================================================
 app = FastAPI(title="fund-sandbox API", version="2.1.0", description="虚拟资金 + 真实规则的基金交易沙盒")
-# ⚠️ 收紧 CORS：原为 `allow_origins=["*"] + allow_credentials=True` ——
+# CORS：原为 `allow_origins=["*"] + allow_credentials=True` ——
 # 服务虽只绑 127.0.0.1，但**浏览器里打开的任何网页**都能跨源打它；而这里有
 # 下单/撤单/改配置等写操作接口，一旦被恶意页面跨源调用，后果直接落在账户上。
 # 本项目是**单机 Electron + 本机浏览器**应用，来源只可能是本机 → 改用 regex 只放行
@@ -85,6 +88,13 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
+# B 区（真实仓位 · 人接管 · 隔离区）：独立命名空间 /api/real/*
+# 只 include 独立 router，不在 A 区逻辑里写 B 区代码——保持边界清晰。
+# 边界定义见 docs/项目/权限边界-人机隔离.md
+from ..real.api import router as real_router  # noqa: E402
+
+app.include_router(real_router)
+
 
 @app.on_event("startup")
 def _startup():
@@ -97,8 +107,8 @@ def _startup():
     except Exception:
         pass
     # RSS 资讯后台抓取线程（每 30 分钟一轮，抓完**自动提取事件**）。
-    # ⚠️ 这一行是资讯/事件链路的关键（market_news / news_triage
-    #    / sector_news 都依赖它）。rss_news.fetch_market_news 内部会调
+    # ⚠️ 资讯/事件链路依赖此行（缺失会导致 market_news / news_triage 停更）：market_news / news_triage
+    #    / sector_news 数据全部停在 09-20）。rss_news.fetch_market_news 内部会调
     #    intel_collector.collect_from_market_news 提取事件，故起这一个线程即恢复整条链路。
     try:
         rss_news.start_background()
@@ -107,7 +117,7 @@ def _startup():
 
 
 def _post_startup():
-    # 预热 akshare（性能优化）：首次 _import_akshare 实测 ~2.5 秒，
+    # 预热 akshare：首次 _import_akshare 实测 ~2.5 秒，
     # 不预热的话第一个触发抓取的请求会莫名卡几秒。放后台线程，**不占启动时间**。
     try:
         t = fetcher.warm_akshare()
@@ -191,6 +201,8 @@ class LLMConfigRequest(BaseModel):
 
 
 class SettingsRequest(BaseModel):
+    # 前端保存设置传 {"values": {...}}（useStore.updateSettings）；保留 settings 兼容旧调用方
+    values: dict = Field(default_factory=dict)
     settings: dict = Field(default_factory=dict)
 
 
@@ -238,7 +250,7 @@ def api_health():
 def api_data_health():
     # 按 (source,data_type,status) 取每组最新一条的完整字段，
     # 让前端 Health.jsx 读到的 record_count / message / created_at 不再为空
-    # （失败行的说明与时间必须可见）。
+    # （失败行的说明与时间必须可见：数据健康度失败必须可追溯）。
     with conn() as c:
         rows = c.execute(
             """
@@ -290,10 +302,9 @@ def _count_crashes_today() -> int:
 def api_diagnostics():
     """运行诊断（崩溃留痕 / 自动恢复 / 真实运行时长）。
 
-    ⚠️原实现 `crashes: 0, restarts: 0` 是**硬编码**，
-    且 `uptime_hours = datetime.now().timestamp() / 3600` ≈ **49 万小时** —— 那是
-    1970 年至今的小时数，不是进程运行时长，纯无意义。前端「软件运行状态」卡因此长期显示假数据。
-    改为读真实来源：
+    崩溃次数 / 重启次数与运行时长均读真实来源；
+    `uptime_hours` 不能用 `datetime.now().timestamp() / 3600`（那是 1970 年至今的小时数），
+    必须是进程运行时长。
       - 自动恢复次数 → `data/logs/watchdog-status.json` 的 `auto_restarts`（Electron 看护写入）
       - 当日崩溃数   → 当日日志的 `[CRASH]` 计数
       - 运行时长     → 本进程启动时刻
@@ -347,8 +358,30 @@ def api_positions():
     with conn() as c:
         items = holdings.get_positions(c)
         for p in items:
-            p["market_value"] = p["current_value"]                                # 前端资产配置环形图按 market_value 聚合
-            p["lots"] = ledger.holding_report(c, p["code"], date.today())         # 前端 LOTS 批次卡按基金逐批
+            code = p["code"]
+            # 页面字段统一在 API 边界适配，避免 React 视图分别猜测引擎内部字段名。
+            p["fund_code"] = code
+            p["total_shares"] = p["shares"]
+            p["total_cost"] = p["cost"]
+            p["market_value"] = p["current_value"]
+            p["profit"] = round(p["current_value"] - p["cost"], 2)
+            p["purchase_status"] = _PS_ZH.get(p.get("purchase_status") or "", p.get("purchase_status"))
+
+            acc_row = c.execute(
+                "SELECT COALESCE(acc_nav, nav) AS acc_nav FROM nav_daily "
+                "WHERE fund_code=? ORDER BY nav_date DESC LIMIT 1",
+                (code,),
+            ).fetchone()
+            if acc_row and acc_row["acc_nav"] is not None:
+                p["profit_pct"] = ledger.position_summary(c, code, float(acc_row["acc_nav"]))["profit_pct"]
+            else:
+                p["profit_pct"] = None
+            try:
+                twr = portfolio.time_weighted_return(c, code)
+                p["twr_pct"] = twr.get("twr_pct") if twr.get("ok") else None
+            except (TypeError, ValueError):
+                p["twr_pct"] = None
+            p["lots"] = ledger.holding_report(c, code, date.today())
         total = sum(p["current_value"] for p in items)
     return {"items": items, "total": len(items), "market_value": round(total, 2)}
 
@@ -375,7 +408,7 @@ def api_order(req: OrderRequest):
             decision_source=req.decision_source, purpose=req.purpose,
             fund_name=req.fund_name, fee_rate_discounted=req.fee_rate_discounted,
         )
-    # ⚠️`submit_order` 返回的是 `{"ok": bool, "reason": ...}`，
+    # （资金安全级）：`submit_order` 返回的是 `{"ok": bool, "reason": ...}`，
     # **根本没有 `status` 字段** —— 原判断 `o.get("status") == "rejected"` **恒为假**，
     # 于是拒单以 HTTP 200 返回、前端拿到后弹「下单成功」，用户以为买到了、实际被拒。
     # 改为按 `ok` 判定：`ok=False` 一律 400 抛错，让前端走失败分支。
@@ -393,6 +426,19 @@ def api_cancel(order_id: str):
         r = orders.cancel_order(c, order_id)
     if not r.get("ok"):
         raise HTTPException(status_code=400, detail=r.get("reason", "撤销失败"))
+    return r
+
+
+@app.delete("/api/orders/{order_id}")
+def api_delete_order(order_id: int):
+    """删除订单**记录**（仅限未确认的单）。
+
+    已确认/已结算的订单不能删——它们已产生份额批次/资金流水，删除会破坏账实一致。
+    """
+    with conn() as c:
+        r = orders.delete_order(c, order_id)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("reason", "删除失败"))
     return r
 
 
@@ -444,7 +490,9 @@ def api_funds(limit: int = Query(500)):
             " ORDER BY fs.status_date DESC, fs.id DESC LIMIT 1) AS purchase_status, "
             "(SELECT nav FROM nav_daily nd WHERE nd.fund_code=f.code ORDER BY nav_date DESC LIMIT 1) AS nav, "
             "(SELECT nav_date FROM nav_daily nd WHERE nd.fund_code=f.code ORDER BY nav_date DESC LIMIT 1) AS nav_date "
-            "FROM funds f ORDER BY f.code LIMIT ?", (limit,)
+            # ⚠️ 必须过滤 status：`DELETE /api/funds/{code}` 是**软删**（status='delisted'），
+            # 这里不过滤的话，前端「移除选中」点了会提示成功、但列表照旧显示 → 看起来「不起效」。
+            "FROM funds f WHERE f.status='active' ORDER BY f.code LIMIT ?", (limit,)
         ).fetchall()
     items = _rows(rows)
     for it in items:
@@ -519,7 +567,9 @@ def api_fund_announcements(code: str, limit: int = Query(20)):
             "SELECT * FROM news_feed WHERE fund_code=? ORDER BY fetched_at DESC LIMIT ?",
             (code, limit),
         ).fetchall()
-    return {"items": _rows(rows), "total": len(rows)}
+    items = _rows(rows)
+    _backfill_news_urls(items)
+    return {"items": items, "total": len(items)}
 
 
 @app.post("/api/redeem/preview")
@@ -548,7 +598,7 @@ def api_dingtou_plans():
 
 @app.post("/api/dingtou/plans")
 def api_dingtou_add(req: DingtouRequest):
-    # ⚠️原写法 `add_plan(c, ..., req.day_of_month, req.enabled, fund_name=req.fund_name)`
+    # 原写法 `add_plan(c, ..., req.day_of_month, req.enabled, fund_name=req.fund_name)`
     # 把 `req.enabled` 当**第 7 个位置参数**传了进去 —— 而该位置是 `fund_name`，
     # 且又用关键字传了一次 `fund_name` → 必然 `TypeError: got multiple values for 'fund_name'`，
     # 即「新增定投计划」接口**从来没能成功过**。改为全部走关键字传参。
@@ -597,12 +647,19 @@ def api_boards(limit: int = Query(12)):
 
 
 @app.get("/api/boards/all")
-def api_boards_all():
+def api_boards_all(board_type: str = Query("industry")):
     """**全部**板块资金流（分析页「板块资金流」卡片点击弹窗用）。
 
     走 `build_boards_payload(limit=0)` 的**全量分支**：所有行业板块按主力净流入排序，
     正=流入 / 负=流出，并附涨跌幅（与卡片默认视图的「流入前6+流出前6」同一数据源与口径）。
+
+    `board_type=concept`：概念板块 —— 同花顺 375 个概念全量逐个抓约 5 分钟，
+    故按「近 7 天新闻热度 Top 10」筛概念名再抓其行情（新闻导向，约 2 秒）。
     """
+    if board_type == "concept":
+        with conn() as c:
+            names = sector_news.hot_concept_names(c, limit=10)
+        return analysis.build_boards_payload(limit=0, board_type="concept", concept_names=names)
     return analysis.build_boards_payload(limit=0)
 
 
@@ -627,23 +684,25 @@ def api_analysis():
     `boards`（板块资金流）/ `heatmap`（板块热力图）/ `exposure`（组合行业暴露）/
     `alloc_data`（环形图）/ `intel_summary` / `narrative`（人读叙述）/ `overlaps`。
 
-    ⚠️原实现是**硬编码桩** ——
-    `{"overall_score": 0, "boards": [], ...}`，导致分析页整页全是
-    「暂无板块资金 / 暂无板块信号 / 无数据」。现接回 `engine.analysis` 的真实函数。
+    数据取自 `engine.analysis` 的真实函数，不做占位返回。
     """
     try:
         with conn() as c:
             boards = analysis.build_boards_payload(limit=6)
             exposure = analysis.build_exposure_payload(c)
         exposures = (exposure or {}).get("per_fund") or []
-        narrative = analysis.build_narrative(boards, exposures, [])
+        # 叙述按基金拆分：逐只基金的集中度/漂移并入该基金的行业暴露，
+        # 组合层面的（同涨同跌/板块资金流/情报库）留在 global 给「组合行业暴露」卡。
+        narr = analysis.build_narrative(boards, exposures, [])
+        for e in exposures:
+            e["narrative"] = narr["per_fund"].get(e["fund_code"], [])
         return {
             "boards": boards,
             "heatmap": boards,          # 板块热力图与资金流同源（前端两处展示）
             "exposure": exposure,
             "alloc_data": ((exposure or {}).get("portfolio") or {}).get("allocation") or [],
             "intel_summary": {},
-            "narrative": narrative,
+            "narrative": narr["global"],
             "overlaps": [],
             "update_time": _now(),
         }
@@ -744,9 +803,22 @@ def api_signals_valley():
 # ============================================================
 # 新闻 / 情报 / 研判
 # ============================================================
+def _backfill_news_urls(items: list) -> None:
+    """历史 fund_announce 行的 url 为空（东财公告接口不返链接）。
+
+    读取时补上基金公告列表页链接，让「阅读全文」可点开——**不改库值**，
+    只在返回给前端前补全展示用链接（库里旧数据原样保留，供后续总结分析）。
+    """
+    for it in items:
+        if it.get("kind") == "fund_announce" and not (it.get("url") or "").strip():
+            code = it.get("fund_code") or ""
+            if code:
+                it["url"] = f"https://fundf10.eastmoney.com/jjgg_{code}.html"
+
+
 @app.get("/api/news")
 def api_news(limit: int = Query(60)):
-    # 仅按真实持仓过滤
+    # 仅按真实持仓过滤（纪律线口径）
     with conn() as c:
         codes = [r["code"] for r in c.execute(
             "SELECT DISTINCT fund_code AS code FROM lots WHERE status='active'").fetchall()]
@@ -757,13 +829,23 @@ def api_news(limit: int = Query(60)):
             f"SELECT * FROM news_feed WHERE fund_code IN ({ph}) ORDER BY fetched_at DESC LIMIT ?",
             (*codes, limit),
         ).fetchall()
-    return {"items": _rows(rows), "total": len(rows)}
+    items = _rows(rows)
+    _backfill_news_urls(items)
+    return {"items": items, "total": len(items)}
 
 
 @app.get("/api/market-news")
-def api_market_news(limit: int = Query(50)):
+def api_market_news(limit: int = Query(50), offset: int = Query(0)):
+    """市场资讯。`limit` + `offset` 分页，供「全部资讯」弹窗滚动加载。
+
+    库里有数万条历史资讯，一次全拉会让浏览器卡死；前端每次取一页、
+    「加载更多」翻页，直到取空为止。
+    """
     with conn() as c:
-        rows = c.execute("SELECT * FROM market_news ORDER BY pub_time DESC LIMIT ?", (limit,)).fetchall()
+        rows = c.execute(
+            "SELECT * FROM market_news ORDER BY pub_time DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
     return {"items": _rows(rows), "total": len(rows), "date": _today()}
 
 
@@ -775,15 +857,26 @@ def api_sector_news(board_type: str = Query("industry"), limit: int = Query(40))
 
 @app.post("/api/news/refresh")
 def api_news_refresh():
-    """手动刷新 RSS 资讯（**抓 + 落库 + 提取事件**）。
+    """手动刷新资讯：RSS 市场资讯（抓 + 落库 + 提取事件）+ **持仓基金的公告 / 重仓股新闻**。
 
-    ⚠️原调 `news.fetch_market_news()` —— 该函数**只抓不存**，
-    刷新恒返回 fetched>0 但**库不更新**。真正的「抓+存」在 `rss_news.fetch_market_news(conn)`。
+    后者写 `news_feed`（资讯页「基金公告 / 重仓股」的数据源），由 `news_collector.refresh_news_feed` 写入：
+    只按**真实持仓**抓，全部 INSERT OR IGNORE —— 旧数据一条不删（后续总结分析要用）。
     """
     try:
         with conn() as c:
             saved = rss_news.fetch_market_news(c)
-        return {"fetched": saved, "saved": saved, "ok": True}
+            feed = news_collector.refresh_news_feed(c)
+        return {
+            "fetched": saved, "saved": saved, "ok": True,
+            "feed": {
+                "ok": feed.get("ok"),
+                "funds": feed.get("funds"),
+                "announce": feed.get("announce"),
+                "stock_news": feed.get("stock_news"),
+                "total_new": feed.get("total_new"),
+                "note": feed.get("note") or feed.get("error"),
+            },
+        }
     except Exception as e:  # noqa: BLE001
         return {"fetched": 0, "saved": 0, "ok": False, "error": str(e)}
 
@@ -924,7 +1017,7 @@ def api_screen_candidates(days: int = 3, top_n: int = 5, fetch: bool = False):
 def api_rule_changes(limit: int = 50):
     """交易规则变化留痕：**申购状态 / 限购额度 / 赎回费什么时候变的**。
 
-    规则不定时在变，需要机制预防。本端点给出变化证据链。
+    规则会不定时变化，本端点给出变化证据链，便于发现并复核。
     kind：`purchase_status`（申购状态+日限额）/ `redeem_fee`（赎回费阶梯）。
     old_value 为 null = 首次记录到的基线，不是"从无到有"的变化。
     """
@@ -1070,43 +1163,145 @@ def api_ai_config_status():
 
 
 # ============================================================
-# 设置（meta 表 + config 默认）
+# 设置（schema 驱动 → 写回 config.toml，热生效）
 # ============================================================
+# 每个可调项 = (config.toml 的 section, 类型, min, max)。
+# 界面文案/分组由前端 Settings.jsx 的 GROUPS 定义，这里只负责
+# 「值从哪个段读、怎么校验、写去哪里」——单一来源，避免两边漂移。
 _SETTINGS_SCHEMA = {
-    "profit_take_pct": float, "drawdown_cut_pct": float, "stop_loss_pct": float,
-    "max_single_position_pct": float, "max_orders_per_day": int, "max_amount_per_order": float,
-    "max_drawdown_stop_pct": float, "purchase_discount": float,
+    # 资金规则
+    "monthly_quota": ("capital", float, 1, None),
+    "per_fund_weekly": ("capital", float, 1, None),
+    # 运行状态
+    "heartbeat_timeout_hours": ("decision", int, 1, 168),
+    # 风控边界
+    "max_amount_per_order": ("risk", float, 1, None),
+    "max_orders_per_day": ("risk", int, 1, 100),
+    "max_single_position_pct": ("risk", float, 1, 100),
+    "max_drawdown_stop_pct": ("risk", float, 1, 95),
+    # 费率
+    "purchase_discount": ("fee", float, 0, 1),
+    # 规则（旧接口已暴露，保留以免回归）
+    "profit_take_pct": ("rules", float, None, None),
+    "drawdown_cut_pct": ("rules", float, None, None),
+    "stop_loss_pct": ("rules", float, None, None),
+    # 分析
+    "overlap_warn_count": ("analysis", int, 1, 10),
 }
+
+
+def _write_toml_values(values: dict) -> None:
+    """把键值写回 config/config.toml，**保留原有注释与排版**。
+
+    不用 tomli_w：TOML 写库会重排段落、丢行内注释，而这个文件的注释是
+    规则语义的一部分。改为行级替换：在 schema 指定的 section 内找
+    `key = ...` 行替换数值；该段没有这个键时插到段首。
+    """
+    path = _config.CONFIG_PATH
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for key, val in values.items():
+        sec = _SETTINGS_SCHEMA[key][0]
+        header = f"[{sec}]"
+        start = next((i for i, ln in enumerate(lines) if ln.strip() == header), None)
+        if start is None:
+            raise ValueError(f"config.toml 里找不到段 {header}")
+        end = next(
+            (j for j in range(start + 1, len(lines))
+             if lines[j].strip().startswith("[") and lines[j].strip().endswith("]")),
+            len(lines),
+        )
+        # 匹配**整行**：缩进 / key / 等号 / 旧值 / 可选行内注释。
+        # ⚠️ 必须连同旧值一起吃掉：若正则只匹配到等号（`^(\s*)key\s*=`），
+        # 替换后变成 `key = 100 100`——新值接在旧值后面，TOML 直接解析失败，
+        # 整个配置变成空 dict。教训：行级改写要匹配到行尾，不能只匹配前缀。
+        row = re.compile(rf"^(\s*){re.escape(key)}\s*=\s*(.*)$")
+        hit = next((j for j in range(start + 1, end) if row.match(lines[j])), None)
+        if hit is not None:
+            m = row.match(lines[hit])
+            rest = m.group(2) or ""
+            cut = rest.find("#")  # 本文件的值均为数字，不含字符串内 #，可直接切
+            comment = rest[cut:].rstrip() if cut >= 0 else ""
+            lines[hit] = f"{m.group(1)}{key} = {val}"
+            if comment:
+                lines[hit] += f"  {comment}"
+        else:
+            lines.insert(start + 1, f"{key} = {val}")
+
+    new_text = "\n".join(lines) + "\n"
+    # 写盘前自校验：新文本必须能解析，且每个键都写进去了。
+    # 宁可报错，也绝不留一个解析不了的 config.toml 给引擎读。
+    import tomllib
+    parsed = tomllib.loads(new_text)
+    for key, val in values.items():
+        sec = _SETTINGS_SCHEMA[key][0]
+        got = parsed.get(sec, {}).get(key)
+        if got != val:
+            raise ValueError(f"写回校验失败：{sec}.{key} 期望 {val!r}，实际 {got!r}")
+    path.write_text(new_text, encoding="utf-8")
+    # 热生效：清掉 config 模块的进程内缓存，下一次 config.get() 读到的就是新值
+    _config._CONFIG = None
 
 
 @app.get("/api/settings")
 def api_settings():
-    defaults = {
-        "profit_take_pct": get("rules", "profit_take_pct"),
-        "drawdown_cut_pct": get("rules", "drawdown_cut_pct"),
-        "stop_loss_pct": get("rules", "stop_loss_pct"),
-        "max_single_position_pct": get("risk", "max_single_position_pct"),
-        "max_orders_per_day": get("risk", "max_orders_per_day"),
-        "max_amount_per_order": get("risk", "max_amount_per_order"),
-        "max_drawdown_stop_pct": get("risk", "max_drawdown_stop_pct"),
-        "purchase_discount": get("fee", "purchase_discount"),
-        "heartbeat_timeout_hours": get("decision", "heartbeat_timeout_hours"),
-        "official_start_month": get("capital", "official_start_month"),
-    }
-    with conn() as c:
-        rows = c.execute("SELECT key, value FROM meta").fetchall()
-    overrides = {r["key"]: r["value"] for r in rows}
-    return {**defaults, **overrides}
+    """可调设置项列表：`{items:[{key, section, value, type, min, max}]}`。
+
+    value 取 config.toml **当前生效值**（引擎 config.get 读的就是它），
+    所以页面显示与实际执行永远一致。
+    这里返回 `data.items` 结构与前端读取一致；
+    返回扁平对象会导致设置页显示「设置加载失败」。
+    """
+    items = [
+        {
+            "key": key,
+            "section": sec,
+            "value": get(sec, key),
+            "type": typ.__name__,
+            "min": lo,
+            "max": hi,
+        }
+        for key, (sec, typ, lo, hi) in _SETTINGS_SCHEMA.items()
+    ]
+    return {"items": items}
 
 
 @app.put("/api/settings")
 def api_settings_put(req: SettingsRequest):
-    with conn() as c:
-        for k, v in req.settings.items():
-            c.execute("INSERT INTO meta (key, value) VALUES (?, ?) "
-                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, str(v)))
-        c.commit()
-    return {"ok": True, "updated": list(req.settings.keys())}
+    """保存设置：校验类型/上下限 → 写回 config.toml → 重载配置（即时生效）。"""
+    values = req.values or req.settings or {}
+    if not values:
+        raise HTTPException(status_code=400, detail="没有要保存的设置项")
+    unknown = sorted(k for k in values if k not in _SETTINGS_SCHEMA)
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"未知设置项：{unknown}")
+
+    cleaned = {}
+    for k, v in values.items():
+        sec, typ, lo, hi = _SETTINGS_SCHEMA[k]
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise HTTPException(
+                status_code=400, detail=f"{k} 必须是数字（{typ.__name__}），收到 {v!r}")
+        v = typ(v)
+        if lo is not None and v < lo:
+            raise HTTPException(status_code=400, detail=f"{k} 不能小于 {lo}")
+        if hi is not None and v > hi:
+            raise HTTPException(status_code=400, detail=f"{k} 不能大于 {hi}")
+        cleaned[k] = v
+
+    try:
+        _write_toml_values(cleaned)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"写入 config.toml 失败：{e}")
+
+    # meta 表已不再是这些键的生效来源；清掉同名旧值，避免日后误读
+    try:
+        with conn() as c:
+            for k in cleaned:
+                c.execute("DELETE FROM meta WHERE key = ?", (k,))
+            c.commit()
+    except Exception:  # noqa: BLE001 清理失败不影响本次保存结果
+        pass
+    return {"ok": True, "updated": cleaned}
 
 
 # ============================================================
@@ -1176,7 +1371,7 @@ def api_refresh_news():
 def api_refresh_all():
     # ⚠️ 局部变量不得叫 news —— 会**遮蔽**模块级 import 的 `news` 模块，
     # 使 news.fetch_market_news() 变成 dict.fetch_market_news → AttributeError。
-    # （改名后不再遮蔽）
+    # 
     nav_res: dict = {}
     news_res: dict = {}
     try:

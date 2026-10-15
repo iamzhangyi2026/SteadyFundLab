@@ -38,6 +38,9 @@ const AUTO_KEYS = [
   'funds',
   'marketNews',
   'news',
+  // 情报库由后端后台线程自动采集（rss_news 每 30 分钟一轮，抓完自动调 intel_collector
+  // 提取事件）。这里把 intel 纳入轮询，页面才会自动显示新采集到的情报，不必手动点「采集」。
+  'intel',
   'portfolioCurve',
   // 数据源状态是轻量只读，进轮询开销可忽略。
   'health',
@@ -81,6 +84,11 @@ export const useStore = create((set, get) => {
   }
   actions.cancelOrder = async (id) => {
     const r = await apiPost(`/api/orders/${id}/cancel`)
+    await get().fetch_orders()
+    return r
+  }
+  actions.deleteOrder = async (id) => {
+    const r = await apiDelete(`/api/orders/${id}`)
     await get().fetch_orders()
     return r
   }
@@ -134,7 +142,7 @@ export const useStore = create((set, get) => {
     await get().fetch_funds()
     return r
   }
-  // ⚠️原实现调 `POST /api/funds` 发 `{fund_code, fetch_nav}` —— **契约完全不匹配**：
+  // 原实现调 `POST /api/funds` 发 `{fund_code, fetch_nav}` —— **契约完全不匹配**：
   // 后端是 `POST /api/funds/add`，字段名是 `code`，且 `reason` **必填**
   // （业务规则：添加候选必须说明"为什么添加"）。原调用必然 404/422，添加基金从来没成功过。
   actions.addFund = async (code, reason) => {
@@ -158,7 +166,23 @@ export const useStore = create((set, get) => {
     await get().fetch_status()
     return r
   }
-  actions.openExternal = (url) => apiPost('/api/open-external', { url })
+  // 打开外链（资讯「阅读全文」等）：
+  //   桌面端 → **应用内轻量浏览器**（Electron 主进程新开 BrowserWindow，Chromium 完整渲染，
+  //   东财/36氪/中新网的 X-Frame-Options 拦不住它，所以在软件内就能读全文）；
+  //   浏览器调试（无 electronAPI）→ 退回 window.open。
+  // ⚠️ 老实现调 `apiPost('/api/open-external')`，而后端只有 GET 路由 → **405**，
+  // 点「阅读全文」只会弹「打开失败」。这是本段重写的原因。
+  actions.openExternal = async (url) => {
+    const link = String(url || '')
+    if (!/^https?:\/\//i.test(link)) return { ok: false, reason: 'invalid-scheme' }
+    const api = typeof window !== 'undefined' ? window.electronAPI : undefined
+    if (api?.openInAppBrowser) {
+      const opened = await api.openInAppBrowser(link)
+      return opened ? { ok: true, mode: 'in-app' } : { ok: false, reason: 'rejected' }
+    }
+    window.open(link, '_blank', 'noopener,noreferrer')
+    return { ok: true, mode: 'window.open' }
+  }
   // 保存设置：后端写回 config.toml 并热生效；顺带刷新账户（资金规则展示随之更新）
   actions.updateSettings = async (values) => {
     const r = await apiPut('/api/settings', { values })

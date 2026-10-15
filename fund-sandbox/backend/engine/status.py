@@ -398,8 +398,8 @@ def fetch_and_save(conn: sqlite3.Connection, fund_code: str, is_qdii: bool = Fal
         return {**st, **raw, "qdii": qd}
 
     # 2) 实时没抓到（网络抖动/被限流）——退而用历史快照，**但必须够新**。
-    #    ⚠️原实现用「任意历史快照」（无时效下限），可能拿到几个月前的状态；
-    #    申购状态随时可变，用过期快照判断会误拒或误放行。故设时效上限，
+    #    历史快照必须带时效下限：申购状态随时可变，
+    #    用过期快照判断会误拒或误放行。故设时效上限，
     #    超过 `_MAX_SNAPSHOT_AGE_DAYS` 天即视为不可信 → 宁可返回 None 让调用方拒绝
     #    （「拿不到就不猜」），也不拿过期数据替用户做交易决定。
     cutoff = (date.today() - timedelta(days=_MAX_SNAPSHOT_AGE_DAYS)).isoformat()

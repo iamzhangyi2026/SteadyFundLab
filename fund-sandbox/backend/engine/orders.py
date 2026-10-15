@@ -90,11 +90,11 @@ def append_ledger(
 def _fund_meta(conn: sqlite3.Connection, fund_code: str) -> dict:
     """取基金档案。
 
-    优先级与合并规则（修复 270042「5 元也能买」异常）：
+    优先级与合并规则：
       1) 先看 funds 表（用户搜索添加，添加时已从实时数据落库）。
       2) 起购/限购以实时抓取为准（「所有的都要同步真实的，不是固定」）：
-         DB 是添加时的落库快照（旧版还被卫生地板抬过，如 270042 真实 5 元落库成 10），
-         配置人工值也可能是旧认知下的固定值（270042 曾按「akshare 5 是脏数据」写成 10000）。
+         DB 是添加时的落库快照，配置人工值也可能是固定值，
+         两者都可能与实时值不一致。
          优先级：实时抓取（拿到行即为准，None=清洗后的「不限」） > 配置显式 > DB 快照；
          akshare 拿不到该基金时才回退配置/DB。
       3) 起购金额 min_purchase 取真实值，不强制抬卫生地板——
@@ -111,8 +111,7 @@ def _fund_meta(conn: sqlite3.Connection, fund_code: str) -> dict:
         d = dict(row)
         d["is_qdii"] = bool(d.get("is_qdii"))
         # 起购/限购以实时抓取为准（「所有的都要同步真实的，不是固定」）：
-        # DB 是添加时的落库快照（旧版还被卫生地板抬过，如 270042 真实 5 元落库成 10），
-        # 配置人工值也可能是旧认知下的固定值（270042 曾按「akshare 5 是脏数据」写成 10000）。
+        # DB 是添加时的落库快照，配置人工值也可能是固定值，两者都可能与实时值不一致。
         # 优先级：实时抓取（拿到行即为准，None=清洗后的「不限」） > 配置显式 > DB 快照。
         pi = fund_pool.lookup_purchase(fund_code)
         if pi:
@@ -168,7 +167,7 @@ def check_before_submit(conn: sqlite3.Connection, fund_code: str, side: str,
                         amount: float, cal: calendar.TradeCalendar) -> tuple[bool, str, dict]:
     """下单前检查。返回 (是否通过, 原因, 上下文信息)。"""
     meta = _fund_meta(conn, fund_code)
-    # warnings：风控边界突破时的「纯提醒」列表，只记录不拦截（风控边界只是警告）
+    # warnings：风控边界突破时的「纯提醒」列表，只记录不拦截（风控边界仅为提醒，不拦截）
     info: dict = {"fund_name": meta.get("name", fund_code), "warnings": []}
 
     # 1. 可投范围
@@ -215,7 +214,7 @@ def check_before_submit(conn: sqlite3.Connection, fund_code: str, side: str,
 
     # 4. 可用预算（累积制，盈亏并入——这是买入的硬约束）
     #    **只对买入生效**。赎回不消耗预算：赎回款到账反而会增加可用资金。
-    #    曾经这里对 sell 也校验，而 sell 的 amount 是「份额」不是「元」，
+    #    sell 的 amount 是「份额」不是「元」，
     #    拿份额去比预算金额，会把正常赎回和基金转换的转出单全部误拒。
     if side == "buy":
         # 延迟导入：budget 模块会反向 import orders，放这里避免循环依赖
@@ -229,7 +228,7 @@ def check_before_submit(conn: sqlite3.Connection, fund_code: str, side: str,
             ), info
         info["budget_available"] = round(avail, 2)
 
-    # 5. 风控边界——纯提醒，不拦截（风控边界只是警告，由人决定是否继续）。
+    # 5. 风控边界——纯提醒，不拦截（风控边界仅为提醒，由人决定是否继续）。
     #    注意区分：下面的现金/预算/可投范围/交易状态/起购点/持有份额等是
     #    「订单本身是否有效、能否成交」的真实硬约束，不属于可配的风控边界，仍保持硬拦。
     max_per_order = get("risk", "max_amount_per_order", 500.0)
@@ -284,7 +283,7 @@ def _position_shares(conn: sqlite3.Connection, fund_code: str) -> float:
 def _pending_sell_shares(conn: sqlite3.Connection, fund_code: str) -> float:
     """在途赎回份额（已提交、尚未确认的 sell 单）。
 
-    赎回单从**提交**到 **T+1 确认**之间，份额还没从 `lots` 里消耗 ——
+     补：赎回单从**提交**到 **T+1 确认**之间，份额还没从 `lots` 里消耗 ——
     若只看持仓份额，同一批份额可以被**重复提交多笔赎回**（超额提交），
     确认时后一笔才因份额不足失败。真实世界里提交后份额即被冻结，故这里一并扣除。
     """
@@ -299,9 +298,9 @@ def _pending_sell_shares(conn: sqlite3.Connection, fund_code: str) -> float:
 def _latest_nav(conn: sqlite3.Connection, fund_code: str) -> float:
     """取最新**单位**净值（市值口径）。
 
-    ⚠️ 市值口径必须用**单位净值** `nav`，不能用累计净值 `acc_nav`。
+    市值口径用单位净值 nav（分红基金会高估份额），不取累计净值。
     有历史分红的基金 acc_nav 明显大于 nav，用它算市值/份额会**高估净值、少给份额**
-    （如 000059 份额少 37%、000015 少 24.5%）。
+    （有历史分红的基金伝额会明显偏少）。市值必须用**单位净值**。
     """
     row = conn.execute(
         """
@@ -365,6 +364,17 @@ def submit_order(conn: sqlite3.Connection, fund_code: str, side: str,
     if decision_source != "human" and not (reason or "").strip():
         return {"ok": False, "reason": "决策理由为空。非人工来源的下单必须说明依据，拒绝无理由下单"}
 
+    # 「全额赎回」的精度处理：
+    # 前端持仓份额是 4 位小数（`holdings.get_positions` 里 `round(shares, 4)`），用户点
+    # 「全部赎回」提交的正是这个四舍五入值，最多比真实持仓大 5e-5 份 → 触发
+    # 「不足以赎回」误拒（例：真实 20.15259368 份、界面提交 20.1526 份）。
+    # 这里把与可赎回份额相差不到 1e-4 的赎回额**夹到精确值**（视为全额赎回）：
+    # 既让全额赎回能通过，也不会真的多赎（后续 FIFO 按精确份额消耗）。
+    if side == "sell":
+        usable = _position_shares(conn, fund_code) - _pending_sell_shares(conn, fund_code)
+        if usable < amount <= usable + 1e-4:
+            amount = usable
+
     ok, why, info = check_before_submit(conn, fund_code, side, amount, cal)
     if not ok:
         return {"ok": False, "reason": why, "info": info}
@@ -377,13 +387,12 @@ def submit_order(conn: sqlite3.Connection, fund_code: str, side: str,
     now = datetime.now()
     timing = cal.describe_order_timing(now)
     nav_date = date.fromisoformat(timing["nav_date"])
-    # 此处不取基金元数据：`check_before_submit` 已单独取过，
-    # 复用其结果即可，避免重复库查询。
+    # 费率直接来自 funds 表，不再单独查询 meta。
 
     # 申购先算费用（外扣法），实际份额要等确认时按净值算。
-    # 申购费用统一走 `fees.calc_purchase`（费率由 funds 表读取），此处不重复取费率。
+    # 折后费率直接取 funds.purchase_fee_rate，避免二次打折。
     if side == "buy":
-        # 注意：funds.purchase_fee_rate 已是 akshare 折后费率，传 already_discounted=True 防二次打折
+        # funds.purchase_fee_rate 已是 akshare 折后费率，传 already_discounted=True 防二次打折
         # calc_purchase 返回 dict，按字段取值（返回类型是 dict 非元组）
         _fp = fees.calc_purchase(fund_code, amount, already_discounted=True)
         fee_purchase, net_amount = _fp["fee"], _fp["net_amount"]
@@ -470,9 +479,8 @@ def confirm_order(conn: sqlite3.Connection, order_id: int,
     meta = _fund_meta(conn, fund_code)
 
     # ⚠️ 成交净值必须用**单位净值 nav**：
-    # 原实现 `COALESCE(acc_nav, nav)` 累计优先 —— 有历史分红的基金 acc_nav 远大于 nav，
-    # 而 `份额 = 净额 / 净值`，用偏大的净值算就会**少给份额**
-    # （实测 000059 少 **37%**、000015 少 **24.5%**）。
+    # 累计优先取 `COALESCE(acc_nav, nav)` 时，有历史分红的基金 acc_nav 远大于 nav，
+    # 而 `份额 = 净额 / 净值`，用偏大的净值算就会**少给份额**。
     # 拿不到单位净值就**拒绝确认**，不再回退累计净值 —— 钱的事，拿不准就不猜。
     nav_row = conn.execute(
         """
@@ -490,7 +498,7 @@ def confirm_order(conn: sqlite3.Connection, order_id: int,
     with conn:
         if row["side"] == "buy":
             amount = row["amount"]
-            # 注意：funds.purchase_fee_rate 已是 akshare 折后费率，传 already_discounted=True 防二次打折
+            # funds.purchase_fee_rate 已是 akshare 折后费率，传 already_discounted=True 防二次打折
             # calc_purchase 返回 dict，按字段取值（返回类型是 dict 非元组）
             _cp = fees.calc_purchase(fund_code, amount, already_discounted=True)
             fee, net = _cp["fee"], _cp["net_amount"]
@@ -528,7 +536,7 @@ def confirm_order(conn: sqlite3.Connection, order_id: int,
         shares = row["amount"]
         # ⚠️ commit=False：`confirm_order` 用 `with conn:` 包住整笔业务（扣款+消耗批次+改订单状态），
         # 内部函数若自行 commit 会把事务切碎 —— 后续步骤失败时前面已落库、无法整体回滚
-        # （`consume_lots` 原在函数内 commit）。
+        # 。
         consumed = ledger.consume_lots(conn, fund_code, shares, nav_date, nav, commit=False)
         gross = sum(c["amount"] for c in consumed)
         total_fee = sum(c["fee"] for c in consumed)
@@ -573,6 +581,29 @@ def cancel_order(conn: sqlite3.Connection, order_id: int) -> dict:
     conn.execute("DELETE FROM quota_usage WHERE ref_order_id = ?", (order_id,))
     conn.commit()
     return {"ok": True, "order_id": order_id, "note": "已撤销并释放配额占用"}
+
+
+def delete_order(conn: sqlite3.Connection, order_id: int) -> dict:
+    """删除订单**记录**（仅限未确认的单）。
+
+    已确认/已结算的单不能删——它们已产生份额批次或资金流水，删除会破坏账实一致。
+    因此只允许删除 pending / cancelled / rejected 的单，且该单不能挂有任何份额批次。
+    """
+    row = conn.execute("SELECT status FROM orders WHERE order_id = ?", (order_id,)).fetchone()
+    if not row:
+        return {"ok": False, "reason": "订单不存在"}
+    status = row["status"]
+    if status in ("confirmed", "settled"):
+        return {"ok": False, "reason": f"订单已 {status}，不能删除（会影响持仓与资金账实一致）"}
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM lots WHERE order_id = ?", (order_id,)
+    ).fetchone()["n"]
+    if n:
+        return {"ok": False, "reason": "该订单已产生份额批次，不能删除"}
+    conn.execute("DELETE FROM quota_usage WHERE ref_order_id = ?", (order_id,))
+    conn.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
+    conn.commit()
+    return {"ok": True, "order_id": order_id, "note": "已删除订单记录"}
 
 
 def convert_fund(conn: sqlite3.Connection, from_code: str, to_code: str,
@@ -710,13 +741,26 @@ if __name__ == "__main__":
 
 def get_orders(conn: sqlite3.Connection, status: str | None = None,
                limit: int = 100) -> list[dict]:
-    """订单列表（按 order_id 倒序）。status 可选过滤。供 /api/orders。"""
-    sql = "SELECT * FROM orders"
+    """订单列表（按 order_id 倒序）。status 可选过滤。供 /api/orders。
+
+    fund_name 从 funds 表 LEFT JOIN 取（orders 表的 fund_name 列从未被写入、
+    恒为 NULL），这样历史订单与新订单都能显示基金名称，而非只有编号。
+    """
+    sql = (
+        "SELECT o.order_id, o.order_no, o.fund_code, "
+        "COALESCE(f.name, o.fund_code) AS fund_name, "
+        "o.side, o.amount, o.shares, o.submit_date, o.submit_time, "
+        "o.nav_date, o.confirm_date, o.arrival_date, o.status, "
+        "o.reject_reason, o.decision_source, o.reason, o.fee_purchase, "
+        "o.fee_redeem, o.penalty_flag, o.deal_nav, o.deal_shares, "
+        "o.deal_amount, o.related_order_id, o.created_at, o.updated_at "
+        "FROM orders o LEFT JOIN funds f ON f.code = o.fund_code"
+    )
     params: list = []
     if status:
-        sql += " WHERE status = ?"
+        sql += " WHERE o.status = ?"
         params.append(status)
-    sql += " ORDER BY order_id DESC LIMIT ?"
+    sql += " ORDER BY o.order_id DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]

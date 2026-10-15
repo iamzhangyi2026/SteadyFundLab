@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-fund-sandbox 归档库引擎
+fund-sandbox 归档库引擎（脱敏版）
 - 定期归档运营库数据
 - 保持运营库轻量
 """

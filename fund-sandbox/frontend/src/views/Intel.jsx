@@ -18,7 +18,7 @@ const CATS = [
   { v: 'macro', label: '宏观' },
 ]
 const CAT_LABEL = Object.fromEntries(CATS.map((c) => [c.v, c.label]))
-// 利好/利空属「市场情绪/状态」，按配色规范用语义色板、不沾红绿：
+// 利好/利空属「市场情绪/状态」，按项目配色约定用语义色板、不沾红绿：
 // 利好=teal(ok) ✓、利空=amber(warn) ⚠，并一律配文字，色弱用户也能读。
 // 与「分析·人读叙述」保持一致（利好=teal），消除红绿在多处语义互相反转。
 // 取值缺失时兜底成 neutral，避免拼出 "tag undefined" 变成没有底色的裸标签。
@@ -30,6 +30,15 @@ export default function Intel() {
   const addIntel = useStore((s) => s.addIntel)
   const collectIntel = useStore((s) => s.collectIntel)
   const notify = useStore((s) => s.notify)
+  const openExternal = useStore((s) => s.openExternal)
+
+  // 阅读全文：走 openExternal（桌面端 = 应用内轻量浏览器）
+  const openLink = (url) => {
+    if (!url) return
+    openExternal(url).then((r) => {
+      if (!r?.ok) notify('打开失败', 'error')
+    })
+  }
   const [open, setOpen] = useState(false)
 
   const items = intel?.items || []
@@ -67,8 +76,8 @@ export default function Intel() {
         kicker="INTEL"
         right={
           <div style={{ display: 'flex', gap: 8 }}>
-            <AsyncButton className="btn btn-sm" onClick={onCollect} pendingText="采集中…">
-              <Icon.refresh className="ico" /> 自动采集
+            <AsyncButton className="btn btn-sm" onClick={onCollect} pendingText="采集中…" title="后台每 30 分钟自动采集一次；此按钮用于立即再采集一轮">
+              <Icon.refresh className="ico" /> 立即采集
             </AsyncButton>
             <button className="btn btn-sm btn-primary" onClick={() => setOpen(true)}>
               <Icon.plus className="ico" /> 录入
@@ -93,11 +102,18 @@ export default function Intel() {
               <div className="meta">
                 <span>{date(it.event_date)}</span>
                 {it.impact_boards && <span>影响板块：{it.impact_boards}</span>}
-                {it.source && <span>来源：{it.source}</span>}
+                {(it.source_name || it.source) && <span>来源：{it.source_name || it.source}</span>}
+                {/* 后端已把 source 拆成 source_name / source_url；以前读 it.source，
+                    既拖着整串 URL 显示、也没有「阅读全文」按钮。 */}
+                {it.source_url && (
+                  <button className="link-btn" onClick={() => openLink(it.source_url)}>
+                    <Icon.external className="ico" style={{ width: 13, height: 13 }} /> 阅读全文
+                  </button>
+                )}
               </div>
             </div>
           ))}
-          {!items.length && <EmptyState title="暂无情报" hint="点「录入」添加，或「自动采集」抓取市场事件" />}
+          {!items.length && <EmptyState title="暂无情报" hint="市场事件由后台自动采集（每 30 分钟一轮）；也可点「录入」手动添加。" />}
         </div>
       </Card>
 

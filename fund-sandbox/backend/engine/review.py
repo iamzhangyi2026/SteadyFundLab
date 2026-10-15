@@ -134,10 +134,10 @@ if __name__ == "__main__":
     print(f"回顾报告: {report}")
 
 
-# ===== 主题复盘 + 映射校准 =====
+# ===== 主题复盘与映射校准 =====
 # 依赖：news_triage（impact_boards 主题、first_pub_time 首现日）
 #       sector_news（board_type 行业/概念、sector、fetched_at 批次）
-# 设计要点：
+# 要点：
 #   复盘 = 把「事件什么时候冒出来」与「那之后板块怎么走」摆在一起，**只给事实**。
 #   校准 = 把上面这批数据归纳成统计，验证「新闻是主信号」这一核心假设。
 

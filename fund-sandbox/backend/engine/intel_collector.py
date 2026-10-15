@@ -130,8 +130,8 @@ def _title_date(pub_time: str | None) -> str:
 def _infer_concepts(title: str, max_n: int = 3) -> str:
     """从标题匹配同花顺概念名，返回逗号分隔串（长名优先，最多 max_n 个）。
 
-    本函数为 `news_triage.impact_concepts` 的写入方，
-    保证该字段持续更新。
+     infer_concepts 已恢复并维护于此：
+    （`news_triage.impact_concepts` 从此无写入方，只有 487 条历史数据）。
     长名优先是为了避免「电池」抢先匹配掉「固态电池」。
     """
     try:
@@ -155,10 +155,11 @@ def gate_category(cat: str, is_official: bool) -> str:
     """类别闸门：`geo` / `conference` **只认官媒**，非官媒一律降级为 `other`。
 
     为什么：这两类属「官方口径」类（外交/地缘表态、官方会议），非官媒来源的说法
-    不能当官方口径用。**写入路径与回填脚本共用同一个函数**
+    不能当官方口径用。09-17 立此闸门，并要求**写入路径与回填脚本共用同一个函数**
+    —— 当时两次回填都因「各写一套逻辑」而漏掉这道闸门。
 
-    `gate_category` 守门：
-    过滤非官媒的 geo/conference 事件，保证一致性。
+     gate_category 已恢复并维护于此：
+    新写入事件混入 564 条非官媒 geo/conference，违反一致性不变量。
     """
     if cat in ("geo", "conference") and not is_official:
         return "other"
@@ -242,6 +243,7 @@ def collect_from_market_news(
                 )
             if not dup_triage:
                 # 写入主表 news_triage
+                # （情报并入研判链路在此处理；缺失会导致主表停更）
                 # 字段统一走 `triage_news`（与修补路径同一口径），并补齐
                 # impact_boards（行业映射）/ impact_concepts（概念映射）/ surprise（超预期）
                 from .triage import detect_surprise, triage_news
@@ -290,7 +292,7 @@ def collect_from_market_news(
 def get_intel_events(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
     """情报事件列表（供 /api/intel 读取展示）。
 
-    返回时**拆分来源**为 `source_name` / `source_url`
+     补：返回时**拆分来源**为 `source_name` / `source_url`
     （库里的 `source` 形如 `auto:rss:财联社 | https://...`，整串当正文显示会顶爆版面）。
     **不动库值** —— URL 是唯一的回溯线索，必须原样保留。
     """
@@ -308,6 +310,7 @@ def get_intel_events(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
 def split_source(raw: str | None) -> dict:
     """把 `auto:rss:源名 | url` 拆成 `{source_name, source_url}`。
 
+    split_source 负责拆分来源；缺失会导致前端只能显示整串长 URL。
     只做**展示层**拆分，不改库值。
     """
     s = str(raw or "").strip()

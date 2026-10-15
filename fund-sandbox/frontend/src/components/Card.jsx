@@ -1,6 +1,5 @@
 export default function Card({ title, kicker, right, children, className = '', hoverable = false, icon, onClick }) {
-  // 传了 onClick 就把**整卡**变成可点区域（含键盘可达：Enter / Space）。
-  // 「板块资金流」卡片要求"点击整卡弹窗"，只绑一个小按钮不够直观。
+  // onClick 让整卡可由鼠标或键盘打开；子按钮保留自身键盘行为，不触发卡片动作。
   const clickable = typeof onClick === 'function'
   return (
     <section
@@ -11,6 +10,7 @@ export default function Card({ title, kicker, right, children, className = '', h
       onKeyDown={
         clickable
           ? (e) => {
+              if (e.target !== e.currentTarget) return
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
                 onClick()

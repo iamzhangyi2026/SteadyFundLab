@@ -370,12 +370,12 @@ def fetch_boards(board_type: str = "industry", concept_names: list[str] | None =
         同花顺有 375 个概念，全量逐个抓约 5 分钟；由调用方**按新闻热度筛 Top N** 传入
         （10 个约 8 秒），与项目「新闻导向找方向」的思路一致。
 
-    原签名无参、且只抓行业 —— 而 `sector_news.refresh_sector_news`
+     补：原签名无参、且只抓行业 —— 而 `sector_news.refresh_sector_news`
     一直按 `fetch_boards(board_type="industry")` 调用 → **TypeError 被 except 吞掉**，
     板块刷新恒失败（数据停在 09-19）；概念侧更是完全没有抓取代码。
 
     为什么行业有两个源：
-        东财的股票板块接口（stock_board_industry_name_em）
+        实测东财的股票板块接口（stock_board_industry_name_em）
         连接被拒绝，同花顺的接口可用。单一依赖任何一个源，
         都会在某天源站抽风时全盘失效。这里同花顺为主、东财为备，
         主源挂了自动切备用源，并在返回值里标明实际用的是哪个，
@@ -439,7 +439,7 @@ def fetch_boards(board_type: str = "industry", concept_names: list[str] | None =
 def _fetch_concept_boards(names: list[str]) -> tuple[list[dict], str]:
     """抓**概念**板块行情（同花顺 `stock_board_concept_info_ths`，逐个概念取实时行情）。
 
-    只抓概念板块（行业板块由 industry 分支负责）。
+     概念板块与行业板块分别抓取写入 `sector_news`。
     只抓传入的 names —— 同花顺有 375 个概念，全量逐个抓约 5 分钟，
     故由调用方**按新闻热度筛 Top N** 传入（新闻导向）。
     """
@@ -790,7 +790,7 @@ def anomalies_to_json(anomalies: list[dict], path) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-# ===== 性能优化 =====
+# =====  性能优化 =====
 
 def warm_akshare() -> float:
     """预热 akshare（**进程内只此一次真正 import**，之后调用走缓存）。
@@ -831,8 +831,8 @@ def fetch_nav_many(codes, workers: int = 6) -> dict:
 def refresh_nav_all() -> dict:
     """刷新「候选池 + 持仓」的净值（**只刷需要的，不抓全市场**）。
 
-    ⚠️ `api/main.py` 有 3 处调用
-    （`/api/funds/refresh`、`/api/refresh/nav`、`/api/refresh/all`），本函数供其调用；
+    `api/main.py` 有 3 处调用（`/api/funds/refresh`、`/api/refresh/nav`、
+    `/api/refresh/all`），本函数即其实现。
 
     刷新范围口径与调度器每日补净值一致（见 `scheduler`）：
       - 候选池 = `funds` 表**非 delisted** 的基金

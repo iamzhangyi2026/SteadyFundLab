@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-fund-sandbox 健康度引擎
+fund-sandbox 健康度引擎（脱敏版）
 - 数据源健康检查
 - 异常检测
 """
@@ -132,7 +132,7 @@ def detect_anomalies(fund_code: str, window: int = 5) -> list[dict]:
 # 四档 action：hold / watch / reduce / clear，且受**持续性硬门槛**约束：
 #     分数低还要连续 N 天才允许升档，单日异常最多到 watch —— 防止"一跌就卖"。
 #
-# 统计口径：收益率 / 趋势 / 分位 / 回撤一律用**累计净值 acc_nav**；
+# 口径统一：收益率 / 趋势 / 分位 / 回撤一律用**累计净值 acc_nav**；
 # 单位净值 nav 只用于市值/份额/浮盈，不参与本模块任何计算。
 #
 # 为什么缺失维度要「剔除后归一化」而不是记 0 分：
@@ -146,7 +146,7 @@ DIMENSIONS = ("trend", "persist", "relative", "drawdown", "valuation", "news")
 def _nav_series(conn: sqlite3.Connection, fund_code: str, limit: int = 900):
     """取该基金按日期**升序**的累计净值序列。
 
-    注意：这里取 `COALESCE(acc_nav, nav)` —— 正常持仓都有 acc_nav，个别数据缺失
+    说明：这里取 `COALESCE(acc_nav, nav)` —— 正常持仓都有 acc_nav，个别数据缺失
     才回退 nav，避免把一个数字也没有的行当 0 参与计算（那会算出荒谬的收益率）。
     """
     rows = conn.execute(

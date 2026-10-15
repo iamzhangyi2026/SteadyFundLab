@@ -6,7 +6,7 @@ fund-sandbox 黑匣子日志（可靠性底座 P0）
 - [CRASH] 标记未捕获异常（sys.excepthook）
 - faulthandler 写 fault.log
 - .session-<name>.json 心跳（每 30s 更新）
-- 原则：日志失败绝不影响业务
+- 约束：日志失败绝不影响业务
 """
 from __future__ import annotations
 

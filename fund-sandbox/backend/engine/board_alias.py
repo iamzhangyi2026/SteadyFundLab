@@ -91,8 +91,8 @@ def _load_extra_boards() -> None:
     为什么不硬编码：同花顺的行业/概念列表会调整，硬编码必然过期；
     而 `sector_news` 表里存的正是抓回来的板块名，直接用它最省事 —— 无网络、毫秒级。
 
-    本表含 `INDUSTRY_ALIASES`（行业词表）全量词条，
-    保证新事件的 `impact_boards` 覆盖率。
+     INDUSTRY_ALIASES（行业词表）在此集中维护；
+    导致 `BOARD_ALIASES` 只剩 42 条 → 新事件的 `impact_boards` 覆盖极低。
     """
     global _EXTRA_BOARD_NAMES, _EXTRA_BOARD_LOWER
     if _EXTRA_BOARD_NAMES is not None:

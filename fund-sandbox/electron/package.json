@@ -27,21 +27,11 @@
     "extraResources": [
       {
         "from": "../backend",
-        "to": "backend"
-      },
-      {
-        "from": "../data",
-        "to": "data",
+        "to": "backend",
         "filter": [
           "**/*",
-          "!**/llm_config.json",
-          "!**/llm_pool.json",
-          "!**/ai_profile.json",
-          "!**/ai_chat.jsonl",
-          "!**/llm_calls.jsonl",
-          "!**/heartbeat.json",
-          "!**/backup_prereset_*.db",
-          "!**/tmp_restore_test.db"
+          "!**/__pycache__/**",
+          "!**/*.pyc"
         ]
       },
       {
@@ -59,18 +49,15 @@
     ],
     "win": {
       "target": [
-        "portable",
         "nsis"
       ],
       "icon": null
     },
-    "portable": {
-      "artifactName": "fund-sandbox-portable.exe"
-    },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "fund-sandbox-Setup-${version}.exe"
     }
   }
 }
