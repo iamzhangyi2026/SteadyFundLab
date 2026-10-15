@@ -193,7 +193,7 @@ CREATE INDEX IF NOT EXISTS idx_div_fund ON dividends(fund_code, ex_date);
 """
 
 
-# board_daily 表已移除（无读写代码引用）。
+# board_daily 死表已删除（0 行、全项目零引用、无任何读写代码）。
 # 该列已废弃，仅保留向后兼容。
 # 为什么不需要它：板块涨跌幅/主力净流入由 sector_news 承担（每轮留痕更完整），
 # 板块→基金的映射走「基金名称匹配」，不依赖 board_code；唯一独有的 PE 分位数据源已失效。
@@ -616,6 +616,8 @@ EXTRA_COLUMNS = [
     ("orders", "related_order_id", "INTEGER"),
     ("funds", "is_qdii", "INTEGER DEFAULT 0"),
     ("funds", "min_purchase", "REAL DEFAULT 1.0"),
+    # 基金入选理由（前端列表展示），建表语句未含、依赖此处在旧库/新库统一补齐
+    ("funds", "add_reason", "TEXT"),
     ("news_triage", "surprise", "TEXT"),
     ("news_triage", "impact_concepts", "TEXT"),
     ("sector_news", "board_type", "TEXT"),
