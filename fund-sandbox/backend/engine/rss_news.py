@@ -5,7 +5,7 @@
 只服务总览「最新资讯」，与分析页「资讯流」(news_feed, 基金公告+重仓股) 是两套数据，
 互不混用。本模块不做任何交易/分析判断，只负责「订阅 RSS → 落库」这一件事。
 
-数据源（实测验证「还活着」的官方/代理 RSS，后续新增均须先 live 抓取确认 entries>0）：
+数据源（已验证可用的官方/代理 RSS，后续新增均须先抓取确认 entries>0）：
   - 中国新闻网财经  https://www.chinanews.com.cn/rss/finance.xml  （主力，纯财经，UTF-8，200/30条）
   - 36氪            https://www.36kr.com/feed                      （科技财经，200/30条）
   - 日经中文网(FeedX代理)  https://feedx.net/rss/nikkei.xml        （亚太宏观/市场，中文，200/20条）
@@ -82,7 +82,7 @@ FEEDS = [
 # 源清单覆盖多个站点；
 # 选取准则：
 # ① 能抓到（entries>0）② 原文能读。
-#   实测通过：中新网时政/世界 30、新华网财经 300、人民网财经 100、CNBC 30、
+#   可用：中新网时政/世界 30、新华网财经 300、人民网财经 100、CNBC 30、
 #            MarketWatch 10（301 重定向，feedparser 自动跟随）、Investing 10、UN 30、WTO 10、
 #            Yahoo 19（原 `finance.yahoo.com/news/rssindex` 已 404，改用 `feeds.finance.yahoo.com`）
 #   未通过：新华网原 `xinhuanet.com` 域名 403 → 换 `news.cn` 成功

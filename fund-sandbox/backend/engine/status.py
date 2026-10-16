@@ -33,7 +33,7 @@ from backend.data import fetcher
 # 交易状态来自全市场每日净值大表（ak.fund_open_fund_daily_em：一次返回约 2.4 万只、
 # 实拉约 28s）。应用启动后会后台预热、运行期每 9 分钟续热，正常下单直接命中热缓存、
 # 秒回不阻塞；此超时仅作冷启动/续热间隙兜底——必须 > 真实拉取耗时(~28s)，否则会在
-# 5s 处超时返回空 → 库内又无历史快照 → 拒单。实测原 5.0 远不够，调到 60.0。
+# 5s 处超时返回空 → 库内又无历史快照 → 拒单。超时阈值需设为 60.0。
 # 可在 config.toml 的 [data_quality] order_status_timeout 调。
 _ORDER_STATUS_TIMEOUT = float(get("data_quality", "order_status_timeout", 60.0))
 
@@ -349,7 +349,7 @@ def fetch_and_save(conn: sqlite3.Connection, fund_code: str, is_qdii: bool = Fal
         3) 连历史快照都没有（全新基金、从未抓过）→ 才返回 None，
            由调用方拒绝下单（拿不到就不猜，但这是真正的未知，不是网络抖动）。
 
-    timeout：实时抓取硬超时（秒）。传 None 用 _ORDER_STATUS_TIMEOUT（默认 60s；原 5s 实测远不够，已调为 60）。
+    timeout：实时抓取硬超时（秒）。传 None 用 _ORDER_STATUS_TIMEOUT（默认 60s）。
     网络不可达时这个时间到了就立刻走降级，不再让同步下单请求干等全局 25s。
     """
     today = date.today().isoformat()

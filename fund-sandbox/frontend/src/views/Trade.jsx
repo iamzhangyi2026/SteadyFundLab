@@ -4,6 +4,7 @@ import Card from '../components/Card'
 import { Icon } from '../components/Icons'
 import EmptyState from '../components/EmptyState'
 import OrderModal from '../components/OrderModal'
+import FundDetailModal from '../components/FundDetailModal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import AsyncButton from '../components/AsyncButton'
 import StatStrip from '../components/StatStrip'
@@ -23,6 +24,10 @@ export default function Trade() {
   const notify = useStore((s) => s.notify)
 
   const [orderOpen, setOrderOpen] = useState(false)
+  // 基金详情弹窗（点击基金即弹出）：{ code, name }
+  const [detail, setDetail] = useState(null)
+  // 下单方向：买入 / 赎回（详情弹窗里的两个按钮会带入）
+  const [orderSide, setOrderSide] = useState('buy')
 
   // 全市场基金搜索（旧版能力回归：按代码 / 名称 / 拼音找基金并加入交易池）
   const [q, setQ] = useState('')
@@ -91,25 +96,21 @@ export default function Trade() {
     }
   }
 
-  const onAddFund = async (code, name) => {
-    // 后端 `POST /api/funds/add` 的 `reason` 是**必填**（业务规则：添加候选必须
-    // 说明为什么添加）。原实现不收集理由就调用，加上契约本身也不匹配 → 添加从未成功。
-    const reason = window.prompt(
-      `添加「${name || code}」到候选池的理由（必填）：\n例如：估值洼地+趋势向上，符合筛选规则`,
-      ''
-    )
-    if (reason === null) return                       // 用户取消
-    if (!reason.trim()) {
-      setSMsg({ t: 'err', text: '必须填写添加理由' })
-      return
-    }
+  // 人工添加：直接加入候选池并抓取历史净值，**不询问理由**
+  // （后端按 `decision_source` 区分——human 不强制 reason，ai / 程序化必须填）。
+  // **Electron 不支持 `prompt()`**（调用即抛
+  // `Error: prompt() is and will not be supported.`），
+  // 因此**任何原生弹窗都不要再用**，统一走自建组件（ConfirmDialog / PromptDialog 等）：
+  // 原生调用无人捕获异常时，界面会静默无反应。
+  const onAddFund = async (code) => {
     setSMsg({ t: 'info', text: `正在添加 ${code} 并抓取历史净值…` })
     try {
-      const r = await addFund(code, reason.trim())
+      const r = await addFund(code)
       setSMsg({ t: 'ok', text: r?.note || `已添加 ${code}` })
       notify('已加入候选池', 'success')
     } catch (e) {
       setSMsg({ t: 'err', text: '添加失败：' + e.message })
+      notify('添加失败：' + e.message, 'error')
     }
   }
 
@@ -181,10 +182,24 @@ export default function Trade() {
     notify(`已取消 ${ok} 条${errs.length ? `，${errs.length} 条失败（${errs[0]}）` : ''}`, errs.length ? 'warning' : 'success')
   }
 
-  // 搜索结果直接购买：带入基金代码打开下单弹窗
-  const onBuy = (code) => {
+  // 打开下单弹窗（买入 / 赎回）
+  const openOrder = (code, side = 'buy') => {
     setOrderCode(code || '')
+    setOrderSide(side)
     setOrderOpen(true)
+  }
+  // 搜索结果直接购买：带入基金代码打开下单弹窗
+  const onBuy = (code) => openOrder(code, 'buy')
+
+  // 点击基金 → 打开「详细资讯」弹窗。
+  // **整行可点**：需求说的是「点击（这个物件）」，不能只绑行内的小按钮 ——
+  // 见 docs/项目/系统变更记录.md 里「板块资金流」那次教训（只绑小按钮 → 用户点卡片没反应）。
+  const openDetail = (code, name) => setDetail({ code, name })
+  const rowKeyDown = (code, name) => (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      openDetail(code, name)
+    }
   }
 
   return (
@@ -261,7 +276,16 @@ export default function Trade() {
             {results.items.map((f) => {
               const inPool = pooled.has(f.code)
               return (
-                <div className="list-item" key={f.code} style={{ padding: '10px 13px' }}>
+                <div
+                  className="list-item clickable"
+                  key={f.code}
+                  style={{ padding: '10px 13px' }}
+                  role="button"
+                  tabIndex={0}
+                  title="点击查看详细资讯"
+                  onClick={() => openDetail(f.code, f.name)}
+                  onKeyDown={rowKeyDown(f.code, f.name)}
+                >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, flexWrap: 'wrap' }}>
@@ -288,13 +312,17 @@ export default function Trade() {
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '0 0 auto' }}>
-                      <button className="btn btn-sm" onClick={() => onBuy(f.code)} title="直接下单买入这只基金">
+                      <button
+                        className="btn btn-sm"
+                        onClick={(e) => { e.stopPropagation(); onBuy(f.code) }}
+                        title="直接下单买入这只基金"
+                      >
                         <Icon.plus className="ico" /> 购买
                       </button>
                       <AsyncButton
                         className="btn btn-sm btn-primary"
                         disabled={inPool}
-                        onClick={() => onAddFund(f.code, f.name)}
+                        onClick={(e) => { e.stopPropagation(); onAddFund(f.code, f.name) }}
                         pendingText="添加中…"
                       >
                         {inPool ? '已关注' : '添加'}
@@ -313,7 +341,16 @@ export default function Trade() {
               <EmptyState title="交易池为空" hint="用上面的搜索添加基金，即可在「下单」时选择" />
             )}
             {fundItems.map((f) => (
-              <div className="list-item" key={f.code} style={{ padding: '9px 13px' }}>
+              <div
+                className="list-item clickable"
+                key={f.code}
+                style={{ padding: '9px 13px' }}
+                role="button"
+                tabIndex={0}
+                title="点击查看详细资讯"
+                onClick={() => openDetail(f.code, f.name)}
+                onKeyDown={rowKeyDown(f.code, f.name)}
+              >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                   {poolSelMode && (
                     <input
@@ -321,6 +358,7 @@ export default function Trade() {
                       aria-label={`选择 ${f.name || f.code}`}
                       checked={poolSel.has(f.code)}
                       onChange={() => togglePool(f.code)}
+                      onClick={(e) => e.stopPropagation()}
                       style={{ flex: '0 0 auto', width: 16, height: 16 }}
                     />
                   )}
@@ -345,7 +383,13 @@ export default function Trade() {
                     {!f.added && (
                       <span className="tag neutral" style={{ fontSize: 'var(--fs-caption, 12px)', padding: '2px 8px', whiteSpace: 'nowrap' }}>官方</span>
                     )}
-                    <button className="btn btn-sm btn-danger" style={{ whiteSpace: 'nowrap' }} onClick={() => onDeleteFund(f.code)}>移除</button>
+                    <button
+                      className="btn btn-sm btn-danger"
+                      style={{ whiteSpace: 'nowrap' }}
+                      onClick={(e) => { e.stopPropagation(); onDeleteFund(f.code) }}
+                    >
+                      移除
+                    </button>
                   </div>
                 </div>
               </div>
@@ -439,7 +483,15 @@ export default function Trade() {
         )}
       </Card>
 
-      <OrderModal open={orderOpen} onClose={() => setOrderOpen(false)} onSubmit={placeOrder} notify={notify} initialCode={orderCode} />
+      <OrderModal
+        open={orderOpen}
+        onClose={() => setOrderOpen(false)}
+        onSubmit={placeOrder}
+        notify={notify}
+        initialCode={orderCode}
+        initialSide={orderSide}
+        mode={orderSide === 'sell' ? 'redeem' : 'purchase'}
+      />
 
       <ConfirmDialog
         open={!!cancelConfirm}
@@ -457,6 +509,27 @@ export default function Trade() {
         confirmText="移除"
         onConfirm={confirmDeleteFund}
         onClose={() => setDelConfirm(null)}
+      />
+      {/* 注：「添加理由」由 decision_source 决定：人工直接加，AI / 程序化必填。
+          通用输入弹窗见 components/PromptDialog.jsx（替代 Electron 不支持的 window.prompt）。 */}
+
+      {/* 基金「详细资讯」弹窗：点击交易页里的基金（**搜索结果**或**交易池**）即弹出。
+          详情内的「手动买入 / 手动赎回」接回下单弹窗（对应方向）。 */}
+      <FundDetailModal
+        open={!!detail}
+        code={detail?.code}
+        name={detail?.name}
+        onClose={() => setDetail(null)}
+        onBuy={() => {
+          const c = detail?.code
+          setDetail(null)
+          openOrder(c, 'buy')
+        }}
+        onSell={() => {
+          const c = detail?.code
+          setDetail(null)
+          openOrder(c, 'sell')
+        }}
       />
     </div>
   )

@@ -6,6 +6,7 @@ import EmptyState from './EmptyState'
 import { money, pct, cls, date } from '../lib/format'
 import { psClass } from '../lib/purchaseStatus'
 import { drawdownRecovery, dingtouBacktest, FREQ_LABEL, WINDOW_LABEL } from '../lib/navlab'
+import DeepAnalysis from './DeepAnalysis'
 
 // 基金详情弹窗：净值曲线 + 核心指标 + 回撤修复 + 定投回测。
 // 对标支付宝基金详情页里评分最高的两项能力——回撤修复（★★★★）与定投收益（★★★），
@@ -176,10 +177,8 @@ function BacktestCard({ series }) {
             同样多的钱在期初一把梭，期末是 {money(r.lumpValue, 0)}。
             <br />
             <span style={{ opacity: 0.85 }}>
-              口径：两者都用「期末市值 ÷ 总投入」算总回报。定投把成本摊到不同价位，
-              遇上先跌后涨或来回震荡的行情更能摊薄成本；但若是先涨后跌，
-              定投会在高位买到更多份额，反而不如期初一把梭。
-              这里没有绝对优劣——要看这段区间的净值怎么走，上面的数字就是答案。
+              两者都用「期末市值 ÷ 总投入」算总回报：定投把成本摊到不同价位，先跌后涨更有利；
+              先涨后跌则不如期初一把梭。没有绝对优劣，看这段净值怎么走。
             </span>
           </div>
         </>
@@ -270,6 +269,8 @@ export default function FundDetailModal({ open, code, name, onClose, onBuy, onSe
 
           <DrawdownCard dd={dd} />
           <BacktestCard series={series} />
+          {/* 六段式深度分析（与真实仓位的格式完全一致，同一套公共实现） */}
+          <DeepAnalysis sections={nav?.sections} title="深度分析" />
 
           <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
             <button className="btn btn-primary" onClick={() => onBuy && onBuy()} disabled={paused}>

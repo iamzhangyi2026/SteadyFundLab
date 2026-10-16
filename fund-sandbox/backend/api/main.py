@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-fund-sandbox FastAPI 主服务（桌面端）
+fund-sandbox FastAPI 主服务（桌面端重建版）
 - 端口 8765，仅绑 127.0.0.1（Electron 同源调用）
 - 接入全部引擎模块（真实世界规则：外扣法 / 赎回阶梯 / T+1 / 15:00 截单 / 只投场外）
 - 数据源失败自动降级，绝不抛 500（返回空/缺省，记录 data_health）
@@ -35,7 +35,7 @@ from ..engine import (
     triage, sector_news, intel_collector, rss_news, macro_data, llm_pool,
     news_quality, event_key, board_alias, audit, active_news, flash_news, time_lag,
     screen_rules, calendar, llm_client, ai_tools, analysis, review, screener, lag, news, health,
-    news_collector,
+    news_collector, fund_pool,
 )
 from ..data import fetcher
 
@@ -117,7 +117,7 @@ def _startup():
 
 
 def _post_startup():
-    # 预热 akshare：首次 _import_akshare 实测 ~2.5 秒，
+    # 预热 akshare：首次 _import_akshare 约 2.5 秒，
     # 不预热的话第一个触发抓取的请求会莫名卡几秒。放后台线程，**不占启动时间**。
     try:
         t = fetcher.warm_akshare()
@@ -164,6 +164,10 @@ class AddFundRequest(BaseModel):
     name: str = ""
     category: str = ""
     reason: str = ""
+    # 添加来源：`human` = 人在界面上手动添加 —— **不强制**说明理由；
+    # 其余（`ai` / 程序化调用）**必须**说明「为什么把它加进候选池」，供候选池追溯。
+    # 默认取 `ai`（严格值），避免调用方漏传该字段时绕过校验。
+    decision_source: str = "ai"
 
 
 class DingtouRequest(BaseModel):
@@ -302,9 +306,10 @@ def _count_crashes_today() -> int:
 def api_diagnostics():
     """运行诊断（崩溃留痕 / 自动恢复 / 真实运行时长）。
 
-    崩溃次数 / 重启次数与运行时长均读真实来源；
-    `uptime_hours` 不能用 `datetime.now().timestamp() / 3600`（那是 1970 年至今的小时数），
-    必须是进程运行时长。
+    原实现 `crashes: 0, restarts: 0` 是**硬编码**，
+    且 `uptime_hours = datetime.now().timestamp() / 3600` ≈ **49 万小时** —— 那是
+    1970 年至今的小时数，不是进程运行时长，纯无意义。前端「软件运行状态」卡因此长期显示假数据。
+    改为读真实来源：
       - 自动恢复次数 → `data/logs/watchdog-status.json` 的 `auto_restarts`（Electron 看护写入）
       - 当日崩溃数   → 当日日志的 `[CRASH]` 计数
       - 运行时长     → 本进程启动时刻
@@ -475,6 +480,9 @@ def api_portfolio_review(period: str = "weekly"):
 # 申购状态展示映射：`fund_status` 存的是英文枚举（open/limited/closed），
 # 而前端判断用的是中文（'限大额' / '暂停申购'）→ 在 API 层统一转成展示值。
 _PS_ZH = {"open": "开放申购", "limited": "限大额", "closed": "暂停申购", "unknown": ""}
+# 赎回状态与申购状态同样是**英文枚举入库**（'open'/'closed'，见 fund_status 表实际取值），
+# 而前端详情弹窗按中文判断（`redeem_status !== '开放赎回'` 才提示），故一并做展示映射。
+_REDEEM_ZH = {"open": "开放赎回", "closed": "暂停赎回", "unknown": ""}
 
 
 @app.get("/api/funds")
@@ -523,10 +531,36 @@ def api_funds_search(q: str = Query(..., min_length=1)):
 
 @app.post("/api/funds/add")
 def api_funds_add(req: AddFundRequest):
-    if not req.reason:
-        raise HTTPException(status_code=400, detail="添加基金必须填写 reason")
+    # reason 的强制程度**按来源区分**：
+    #   人工在界面添加 → 不弹询问、不强制理由；
+    #   AI / 程序化添加 → 必须说明「为什么加它」（候选池可追溯）。
+    is_human = (req.decision_source or "").strip().lower() == "human"
+    reason = (req.reason or "").strip()
+    if not is_human and not reason:
+        raise HTTPException(
+            status_code=400,
+            detail="AI / 程序化添加基金必须填写 reason（说明为什么加入候选池）",
+        )
     with conn() as c:
-        r = holdings.add_fund(req.code, req.name, req.category, req.reason, reactivate=False, conn=c)
+        # 用 `fund_pool.add_fund`（交易池「一步到位」入口），而不是 `holdings.add_fund`（只写档案表）。
+        # 后者会带来三个可见后果：
+        #   ① 不解析名称/类型 → `funds.name` 落成基金代码，关注列表显示代码而非基金名；
+        #   ② 不抓历史净值 → 刚添加的基金要等下一轮调度才有点位，详情弹窗先是空的；
+        #   ③ `reactivate=False` → 已从池中移除（status='delisted'）的基金**加不回来**
+        #      （用户无法重新添加其中任何一只）。
+        # `fund_pool.add_fund` 做的正是：解析名称/类型 → 抓购买规则 → 抓历史净值 → UPSERT funds，
+        # 且 UPSERT 会把 status 置回 'active'（用户**主动**添加 = 应当复活，与「移除」语义不冲突）。
+        r = fund_pool.add_fund(c, req.code)
+        if not r.get("ok"):
+            raise HTTPException(status_code=400, detail=r.get("note") or f"添加 {req.code} 失败")
+        # reason 落库：人工添加允许留空 → 记 NULL，便于在库里区分「人工添加」与
+        # 「AI 添加（带理由）」。added_at 一律记录（加入时间与来源无关）。
+        # 注：该列需在此处写入，否则读取侧取不到值。
+        c.execute(
+            "UPDATE funds SET add_reason=?, added_at=? WHERE code=?",
+            (reason or None, datetime.now().isoformat(timespec="seconds"), req.code),
+        )
+        c.commit()
     return r
 
 
@@ -549,6 +583,62 @@ def api_fund_detail(code: str):
         ).fetchall())
         pos = [p for p in holdings.get_positions(c) if p["code"] == code]
     return {"fund": _row(f), "series": series[-365:], "position": pos[0] if pos else None}
+
+
+@app.get("/api/fund/{code}/nav")
+def api_fund_nav(code: str):
+    """基金详情弹窗的数据源：净值序列 + 中长期统计 + 申购/赎回状态。
+
+    背景（本次修复）：前端 `FundDetailModal` 自初始提交起就调用本路径，
+    但后端**从未实现该路由** → 一直 404 → 弹窗兜底显示
+    「暂无净值数据，这只基金还没有入库的历史净值，先在『交易』页添加并抓取」。
+    用户因此误判为「持仓基金要先去交易页添加（关注）才会抓取/显示」——
+    实际是接口缺失，与是否在关注池无关。
+
+    统计口径与「基金分析」一致：**一律用累计净值 acc_nav**（把分红加回，
+    避免分红造成的假低点），缺失时才回退单位净值。
+    申购/赎回状态与 `/api/funds` 同口径（读 `fund_status` 最新快照 + 中文映射），
+    保证「持仓页 / 基金列表 / 详情弹窗」三处显示一致。
+    """
+    with conn() as c:
+        rows = c.execute(
+            "SELECT nav_date, nav, acc_nav FROM nav_daily WHERE fund_code=? ORDER BY nav_date",
+            (code,),
+        ).fetchall()
+        f = c.execute(
+            "SELECT f.name, f.min_purchase, "
+            "(SELECT fs.purchase_status FROM fund_status fs WHERE fs.fund_code=f.code "
+            " ORDER BY fs.status_date DESC, fs.id DESC LIMIT 1) AS purchase_status, "
+            "(SELECT fs.redeem_status FROM fund_status fs WHERE fs.fund_code=f.code "
+            " ORDER BY fs.status_date DESC, fs.id DESC LIMIT 1) AS redeem_status, "
+            "(SELECT fs.purchase_limit FROM fund_status fs WHERE fs.fund_code=f.code "
+            " ORDER BY fs.status_date DESC, fs.id DESC LIMIT 1) AS purchase_limit "
+            "FROM funds f WHERE f.code=?",
+            (code,),
+        ).fetchone()
+        series = [
+            {"date": r["nav_date"], "nav": r["nav"], "acc_nav": r["acc_nav"]} for r in rows
+        ]
+        # 六段式代码分析（与真实仓位格式一致；复用本次已查的 series，不重复查库）
+        sections = analysis.build_deep_sections(code, c, series=series,
+                                                name=(f["name"] if f else None) or code) if f else {}
+
+    # 统计用**全量**序列（历史长度才准），回传截断到最近 750 个交易日
+    # （详情弹窗的定投回测最长看 2 年，750 点足够；避免把十几年序列塞给前端）。
+    stats = analysis.nav_stats(series)
+    ps = (f["purchase_status"] if f else None) or ""
+    rs = (f["redeem_status"] if f else None) or ""
+    return {
+        "code": code,
+        "name": (f["name"] if f else None) or code,
+        "series": series[-750:],
+        "stats": stats,
+        "purchase_status": _PS_ZH.get(ps, ps),
+        "purchase_limit": f["purchase_limit"] if f else None,
+        "redeem_status": _REDEEM_ZH.get(rs, rs),
+        "min_purchase": f["min_purchase"] if f else None,
+        "sections": sections,
+    }
 
 
 @app.post("/api/fund/{code}/purchase")
@@ -684,11 +774,13 @@ def api_analysis():
     `boards`（板块资金流）/ `heatmap`（板块热力图）/ `exposure`（组合行业暴露）/
     `alloc_data`（环形图）/ `intel_summary` / `narrative`（人读叙述）/ `overlaps`。
 
-    数据取自 `engine.analysis` 的真实函数，不做占位返回。
+    ⚠️ ** 修（端到端检查发现的 BUG）**：原实现是**硬编码桩** ——
+    `{"overall_score": 0, "boards": [], ...}`，导致分析页整页全是
+    「暂无板块资金 / 暂无板块信号 / 无数据」。现接回 `engine.analysis` 的真实函数。
     """
     try:
         with conn() as c:
-            boards = analysis.build_boards_payload(limit=6)
+            boards = analysis.build_boards_payload(limit=20)
             exposure = analysis.build_exposure_payload(c)
         exposures = (exposure or {}).get("per_fund") or []
         # 叙述按基金拆分：逐只基金的集中度/漂移并入该基金的行业暴露，
@@ -859,8 +951,9 @@ def api_sector_news(board_type: str = Query("industry"), limit: int = Query(40))
 def api_news_refresh():
     """手动刷新资讯：RSS 市场资讯（抓 + 落库 + 提取事件）+ **持仓基金的公告 / 重仓股新闻**。
 
-    后者写 `news_feed`（资讯页「基金公告 / 重仓股」的数据源），由 `news_collector.refresh_news_feed` 写入：
-    只按**真实持仓**抓，全部 INSERT OR IGNORE —— 旧数据一条不删（后续总结分析要用）。
+    后者写 `news_feed`（资讯页「基金公告 / 重仓股」的数据源），
+    由 `news_collector.refresh_news_feed` 维护：只按**真实持仓**抓，
+    全部 INSERT OR IGNORE —— 旧数据一条不删（后续总结分析要用）。
     """
     try:
         with conn() as c:
@@ -1211,7 +1304,7 @@ def _write_toml_values(values: dict) -> None:
             len(lines),
         )
         # 匹配**整行**：缩进 / key / 等号 / 旧值 / 可选行内注释。
-        # ⚠️ 必须连同旧值一起吃掉：若正则只匹配到等号（`^(\s*)key\s*=`），
+        # ⚠️ 必须连同旧值一起吃掉：曾写成正则只匹配到等号（`^(\s*)key\s*=`），
         # 替换后变成 `key = 100 100`——新值接在旧值后面，TOML 直接解析失败，
         # 整个配置变成空 dict。教训：行级改写要匹配到行尾，不能只匹配前缀。
         row = re.compile(rf"^(\s*){re.escape(key)}\s*=\s*(.*)$")
@@ -1248,8 +1341,8 @@ def api_settings():
 
     value 取 config.toml **当前生效值**（引擎 config.get 读的就是它），
     所以页面显示与实际执行永远一致。
-    这里返回 `data.items` 结构与前端读取一致；
-    返回扁平对象会导致设置页显示「设置加载失败」。
+    修复前这里返回扁平对象，与前端读取的 `data.items` 不符，
+    导致设置页恒显示「设置加载失败」。
     """
     items = [
         {

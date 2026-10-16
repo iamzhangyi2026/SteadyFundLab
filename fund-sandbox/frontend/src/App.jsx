@@ -45,7 +45,7 @@ const NAV_GROUPS = [
   // 独立账户（人工接管的真实仓位）放最前：它是本应用里「人管的那一半」，
   // 优先级高于 AI 侧的沙盒与投研，故置于「工作台」之前。
   { title: '独立账户', items: [
-    { key: 'real', label: '真实仓位', icon: Icon.wallet, sub: '人工管理 · AI 只读' },
+    { key: 'real', label: '真实仓位', icon: Icon.wallet, sub: '人工管理' },
   ] },
   { title: '工作台', items: [
     { key: 'overview', label: '决策总览', icon: Icon.overview, sub: '组合状态与待办' },

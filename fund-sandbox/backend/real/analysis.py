@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 """B 区基金分析：基于净值序列算指标 + 生成分析文字。
 
-AI 权限：可读真实持仓并**生成分析**（供人参考），
+AI 权限：AI 可读真实持仓并**生成分析**（供人参考），
 仍不可写入 / 交易 B 区。分析只讲事实与判断，不给买卖建议。
+
+实现说明：本模块产出的「深度分析」是**用代码规则算出来的**
+（SOP Step 7 六段式），**不调用外部大模型** —— 所以界面文案叫「深度分析」，
+不挂「AI」名头（名实要相符）。
 """
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ import statistics
 import time
 
 from backend.real import nav as real_nav
+from ..engine.deep_sections import build_sections  # 六段式公共实现（A/B 区共用）
 
 
 def _fmt_money(v):
@@ -120,9 +125,23 @@ def analyze(code: str, name: str = "", holding: dict | None = None) -> dict:
     series, m = _series_metrics(code)
     if not series:
         return {"fund_code": code, "ok": False, "error": "抓不到净值数据",
-                "series": [], "metrics": {}, "analysis": ""}
+                "series": [], "metrics": {}, "analysis": "", "sections": {}}
+    vals = _vals(series)
+    pct = _percentile(vals)
+    if pct is not None:
+        m["percentile"] = pct
+    # 公共数据（新闻资讯 / 基金档案 / 费率规则）—— **只读复用**，见 real/shared.py。
+    # 边界：账本隔离、数据共用；新闻与规则是真实世界资料，A 区抓一次、两区共用。
+    from backend.real import shared
+
+    news = shared.read_news(code)
+    meta = shared.read_fund_meta(code)
+    tiers = shared.redeem_tiers()
+    dividends = shared.read_dividends(code)
     return {"fund_code": code, "ok": True, "series": series[-300:], "metrics": m,
-            "analysis": _narrative(name or code, m, holding)}
+            "analysis": _narrative(name or code, m, holding),
+            "sections": _sections(name or code, m, holding, news=news, meta=meta,
+                                  tiers=tiers, dividends=dividends)}
 
 
 def _narrative(name: str, m: dict, holding: dict | None) -> str:
@@ -174,3 +193,21 @@ def _narrative(name: str, m: dict, holding: dict | None) -> str:
         )
 
     return "\n".join(out) if out else "暂无足够数据生成分析。"
+
+
+def _sections(name: str, m: dict, holding: dict | None,
+              news: list | None = None, meta: dict | None = None, tiers: list | None = None,
+              dividends: list | None = None) -> dict:
+    """六段式深度分析 —— 薄封装，转调公共模块 `backend/engine/deep_sections.py`。
+
+    真实仓位（本模块）与模拟持仓（A 区）共用同一份实现，避免同一逻辑写两遍、改一处漏一处。
+    """
+    return build_sections(name, m, holding, news=news, meta=meta,
+                          tiers=tiers, dividends=dividends)
+
+
+def _percentile(vals: list):
+    """累计净值的自身历史分位 —— 转调公共模块，A/B 区同一口径。"""
+    from ..engine.deep_sections import percentile
+
+    return percentile(vals)

@@ -125,7 +125,10 @@ def poll_window():
 
 @router.get("/holdings/{fund_code}/detail")
 def holding_detail(fund_code: str):
-    """单只真实持仓的详情 + AI 分析（净值序列 / 指标 / 分析文字）。"""
+    """单只真实持仓的详情 + 深度分析（净值序列 / 指标 / 六段式分析文字）。
+
+    分析由**代码规则**生成（`analysis._sections`，SOP Step 7 六段式），不调用外部大模型。
+    """
     from backend.real import analysis
 
     holding = store.get_holding(fund_code)

@@ -8,6 +8,7 @@ import { money, pct, date } from '../lib/format'
 
 // B 区（真实仓位 · 人接管 · 隔离区）。
 // 本页自带 fetch，不进 A 区共享 store——两区互不干扰。
+// 边界定义见 docs/项目/权限边界-人机隔离.md
 const API = '/api/real'
 
 async function j(url, opts) {
@@ -215,10 +216,9 @@ export default function RealPositions() {
 
   return (
     <div className="stack">
-      <Card title="真实仓位" kicker="人接管 · 隔离区（AI 只读）">
+      <Card title="真实仓位" kicker="人工管理">
         <div className="muted" style={{ fontSize: 13, lineHeight: 1.7 }}>
-          <b>真实资金</b>仓位，与虚拟沙盒隔离。买卖在外部完成，系统不接交易通道；
-          持仓经截图或文本录入，<b>人工核对后入库</b>。
+          真实资金仓位，买卖在外部完成；持仓经截图或文本录入，<b>人工核对后入库</b>。
         </div>
       </Card>
 

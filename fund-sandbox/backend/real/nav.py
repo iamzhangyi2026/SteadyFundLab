@@ -6,7 +6,9 @@
 """
 from __future__ import annotations
 
+import sqlite3
 import threading
+from pathlib import Path
 
 # akshare 内部用 py_mini_racer（原生库），**并发调用会崩掉整个进程**——串行化。
 _AK_LOCK = threading.Lock()
@@ -45,11 +47,73 @@ def _cols(df):
     return col_date, col_nav
 
 
+# ---------------------------------------------------------------------------
+# 公共数据层：行情复用（账本分区 / 数据共用）
+# ---------------------------------------------------------------------------
+# 行情是真实世界的公共数据（东财同一份），**不该两个区各抓一遍**：谁需要谁登记，
+# 抓到的落一份公共表，重复的直接用缓存（只有真实持仓与沙盒交易需要隔离账本，
+#   其余资讯类资料两区共用）。
+#
+# 边界：**账本隔离**（真实持仓 = 真钱 / 沙盒 = 模拟），
+#       **数据共用**（行情 / 新闻 / 规则 / 日历 —— 全是真实世界的资料）。
+#
+# 落点说明：公共行情表目前物理上在 A 区库 `fund_sandbox.db`（它是唯一抓取方：
+# 有调度器 + 双源交叉验证）。B 区**只读**——不写、不做账本 JOIN。
+_SHARED_DB = Path(__file__).resolve().parents[2] / "data" / "fund_sandbox.db"
+# 公共行情最后一条距今超过这么多天，就认为陈旧 → 实时抓兜底（防 A 区尚未刷新时读到旧值）
+_SHARED_STALE_DAYS = 10
+
+
+def _read_shared_series(code: str) -> list[dict]:
+    """只读公共行情表（`nav_daily`）。未命中 / 陈旧 / 异常一律返回 []，由调用方实时抓兜底。"""
+    if not _SHARED_DB.exists():
+        return []
+    try:
+        con = sqlite3.connect(f"file:{_SHARED_DB.as_posix()}?mode=ro", uri=True, timeout=3)
+    except Exception:
+        return []
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT nav_date, nav, acc_nav, daily_growth FROM nav_daily "
+            "WHERE fund_code=? ORDER BY nav_date",
+            (code,),
+        ).fetchall()
+    except Exception:
+        return []
+    finally:
+        con.close()
+    if not rows:
+        return []
+    out = [
+        {"date": r["nav_date"], "nav": r["nav"], "growth": r["daily_growth"], "acc_nav": r["acc_nav"]}
+        for r in rows
+    ]
+    # 陈旧保护：公共表太久没更新（A 区还没刷到这只）→ 交回调用方实时抓
+    try:
+        from datetime import date as _date
+
+        if (_date.today() - _date.fromisoformat(out[-1]["date"])).days > _SHARED_STALE_DAYS:
+            return []
+    except Exception:
+        pass
+    return out
+
+
 def fetch_series(code: str, limit: int | None = None, with_acc: bool = False) -> list[dict]:
     """取净值序列 [{date, nav, growth, acc_nav?}]，按日期升序。失败返回 []。
 
-    with_acc=True 时额外抓累计净值（分红校准后口径），用于中长期收益 / 回撤计算。
+    **优先复用公共行情**（A 区 `nav_daily`，只读）—— 行情是真实世界的公共数据，
+    只有一份（东财），A 区调度器每天已在抓；B 区再抓一遍就是同一份数据抓两次，
+    既浪费又可能两边不一致。
+    公共表未覆盖该基金时，才实时抓兜底（保证真实持仓永远有数据）。
+
+    with_acc=True 时额外取累计净值（分红校准后口径），用于中长期收益 / 回撤计算。
     """
+    shared = _read_shared_series(code)
+    if shared:
+        return shared[-limit:] if limit else shared
+
     df = _fetch_df(code, "单位净值走势")
     if df is None or df.empty:
         return []

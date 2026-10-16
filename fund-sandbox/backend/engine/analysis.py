@@ -306,6 +306,114 @@ def nav_stats(series: list[dict]) -> dict:
     }
 
 
+def build_deep_sections(code: str, conn=None, series: list | None = None,
+                        name: str | None = None) -> dict:
+    """A 区（模拟持仓）六段式代码分析 —— 格式与真实仓位完全一致。
+
+    取数全部来自 A 区库；六段式生成逻辑走公共模块 `engine/deep_sections.py`，
+    与真实仓位（`real/analysis.py`）共用同一份实现。
+
+    :param code:   基金代码
+    :param conn:   已有连接（调用方开事务时避免重复开连接）
+    :param series: 已查好的净值序列；传入则不再查库（调用方复用同一次查询结果）
+    :param name:   基金名称；不传则查库取
+    :return: 六段式 dict；该基金没有净值数据时返回 {}
+    """
+    from . import deep_sections, fees
+    from .deep_sections import PS_ZH as _PS_ZH
+
+    own = conn is None
+    conn = conn or get_connection()
+    try:
+        if series is None:
+            rows = conn.execute(
+                "SELECT nav_date, nav, acc_nav, daily_growth FROM nav_daily "
+                "WHERE fund_code=? ORDER BY nav_date",
+                (code,),
+            ).fetchall()
+            series = [
+                {"date": r["nav_date"], "nav": r["nav"], "acc_nav": r["acc_nav"],
+                 "growth": r["daily_growth"]}
+                for r in rows
+            ]
+        if not series:
+            return {}
+        if name is None:
+            f0 = conn.execute("SELECT name FROM funds WHERE code=?", (code,)).fetchone()
+            name = (f0["name"] if f0 else None) or code
+        st = nav_stats(series)
+        vals = [r.get("acc_nav") or r.get("nav") for r in series]
+        last = series[-1]
+        m = {
+            "nav": last.get("nav"),
+            "nav_date": last.get("date"),
+            "change_pct": last.get("growth"),
+            "ret_1m": st.get("ret_1m"),
+            "ret_3m": st.get("ret_3m"),
+            "ret_6m": st.get("ret_6m"),
+            "ret_1y": st.get("ret_1y"),
+            "max_drawdown": st.get("max_drawdown"),
+            "vol": st.get("annual_vol"),
+            "history_days": st.get("history_days"),
+            "percentile": deep_sections.percentile(vals),
+        }
+
+        # 持仓（本基金若在沙盒里有活跃批次，带上持有收益率；没有则为 None）
+        lot = conn.execute(
+            "SELECT COALESCE(SUM(remaining_shares),0) AS s, "
+            "COALESCE(SUM(cost_amount * (remaining_shares / NULLIF(shares,0))),0) AS c "
+            "FROM lots WHERE fund_code=? AND status='active'",
+            (code,),
+        ).fetchone()
+        holding = None
+        if lot and (lot["s"] or 0) > 0:
+            mv = (lot["s"] or 0) * (last["nav"] or 0)
+            cost = lot["c"] or 0
+            holding = {
+                "shares": lot["s"], "cost_amount": cost, "market_amount": mv,
+                "profit": mv - cost,
+                "profit_rate": (mv - cost) / cost if cost else None,
+            }
+
+        # 公共数据：新闻 / 基金档案 / 费率阶梯 / 分红公告
+        news = [
+            {"kind": r["kind"], "title": r["title"], "source": r["source"],
+             "pub_time": r["pub_time"], "url": r["url"]}
+            for r in conn.execute(
+                "SELECT kind, title, source, pub_time, url FROM news_feed "
+                "WHERE fund_code=? ORDER BY pub_time DESC, id DESC LIMIT 12",
+                (code,),
+            ).fetchall()
+        ]
+        fmeta = conn.execute(
+            "SELECT f.purchase_fee_rate, f.dividend_method, "
+            "(SELECT fs.purchase_status FROM fund_status fs WHERE fs.fund_code=f.code "
+            " ORDER BY fs.status_date DESC, fs.id DESC LIMIT 1) AS purchase_status "
+            "FROM funds f WHERE f.code=?",
+            (code,),
+        ).fetchone()
+        meta = {k: fmeta[k] for k in fmeta.keys()} if fmeta else {}
+        if meta.get("purchase_status"):
+            meta["purchase_status"] = _PS_ZH.get(meta["purchase_status"], meta["purchase_status"])
+        dividends = [
+            {"title": r["title"], "pub_time": r["pub_time"], "source": r["source"], "url": r["url"]}
+            for r in conn.execute(
+                "SELECT title, pub_time, source, url FROM news_feed "
+                "WHERE fund_code=? AND kind='fund_announce' "
+                "AND (title LIKE '%分红%' OR title LIKE '%收益分配%' OR title LIKE '%利润分配%') "
+                "ORDER BY pub_time DESC LIMIT 6",
+                (code,),
+            ).fetchall()
+        ]
+        return deep_sections.build_sections(
+            name, m, holding,
+            news=news, meta=meta, tiers=fees.get_redeem_tiers(), dividends=dividends,
+        )
+    finally:
+        if own:
+            conn.close()
+
+
 # =============================================================================
 # 人读叙述
 # =============================================================================
@@ -320,8 +428,8 @@ def build_narrative(boards: dict, exposures: list[dict], intel_items: list[dict]
     - **组合层面**的（持仓总览 / 同涨同跌 / 板块资金流 / 情报库状态）→ 归入 `global`，
       由前端渲染进「组合行业暴露」卡。
 
-    拆分方式：叙述按关联对象拆分到持仓穿透与行业暴露里，
-    做到「说到哪只基金、就在哪只基金下面」。
+    拆分方式：叙述不再单独成卡，而是按关联对象
+    拆分到持仓穿透与行业暴露里，做到「说到哪只基金、就在哪只基金下面」。
     """
     per_fund: dict[str, list[str]] = {e["fund_code"]: [] for e in (exposures or [])}
     global_paras: list[str] = []

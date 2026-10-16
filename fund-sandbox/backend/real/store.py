@@ -174,9 +174,20 @@ def confirm_import(import_id: int, rows: list, snap_date: str | None = None) -> 
             (snap_date, agg["cost"], agg["market"], agg["profit"], agg["n"], _now()),
         )
         c.commit()
-        return {"ok": True, "import_id": import_id, "holdings_count": agg["n"]}
+        codes = [r["fund_code"] for r in rows if r.get("fund_code")]
     finally:
         c.close()
+
+    # 确认入库后**自动抓资料**——否则还要人工再点一次「刷新净值」才看得到数据。
+    # 抓取走**公共数据层**：命中公共行情（A 区已抓）直接复用，未命中才实时抓兜底；
+    # 抓取失败不影响入库结果（持仓已落库）。
+    nav_refresh = {"ok": False, "note": "无持仓代码，跳过"}
+    if codes:
+        try:
+            nav_refresh = refresh_nav(codes)
+        except Exception as e:  # noqa: BLE001
+            nav_refresh = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "import_id": import_id, "holdings_count": agg["n"], "nav_refresh": nav_refresh}
 
 
 def discard_import(import_id: int) -> dict:

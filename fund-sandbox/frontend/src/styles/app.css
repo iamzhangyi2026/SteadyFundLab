@@ -1,6 +1,6 @@
 /* =========================================================================
    应用层样式：布局 + 组件。视觉地基来自 tokens.css（配色/间距/字号/圆角）。
-   设计约定：浅色主题、全点按/触摸、涨红跌绿、间距字号细调当一等任务。
+   设计约定：浅色主题、全点按/触摸、涨红跌绿、间距与字号精细调整。
    ========================================================================= */
 
 /* 全局 reset 与 body 基础样式已收敛到 tokens.css（单一事实来源），避免两套规范并存 */
@@ -396,7 +396,7 @@
 .bar-fill { height: 100%; border-radius: 999px; }
 .bar-fill.hot { background: linear-gradient(90deg, #f3a3a3, var(--up, #e23b3b)); }
 .bar-fill.risk { background: linear-gradient(90deg, #9fd9b8, var(--down, #1f9e5a)); }
-/* 兜底：kind 缺失或为 0 时统一为灰底，否则整条不可见 */
+/* 兜底：kind 缺失或为 0 时不渲染成透明 */
 .bar-fill.flat { background: linear-gradient(90deg, #c9cfda, #98a1b0); }
 .bar-val { font-size: var(--fs-kicker); font-variant-numeric: tabular-nums; min-width: 78px; text-align: right; }
 
@@ -598,7 +598,7 @@
 /* ---------- 卡片右上角的标签+按钮组合 ---------- */
 .tag-row { display: inline-flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 
-/* 表格里的次要说明列：比正文小一档，但不小于 12px，统一定义于此 */
+/* 表格里的次要说明列：比正文小一档，但不小于 12px */
 .cell-note { font-size: var(--fs-kicker); line-height: 1.55; }
 
 /* ---------- 统计小卡（交易/持仓/情报/健康页顶部一排指标） ---------- */
@@ -628,14 +628,16 @@
 /* 在原 .bar-row（140px 1fr auto）前加一列排名号 */
 .bar-row { grid-template-columns: 28px 132px 1fr auto; }
 
-/* 板块资金流卡：内容撑满卡片高度。
-   与同行更高的「组合行业暴露」并排时，卡片被拉伸，若内容不够会在底部留一大片空白；
-   这里让排行条区域 flex 撑开、各行按 space-between 均分，空白即被填满。 */
-.boards-card { display: flex; flex-direction: column; }
-.boards-card > .card-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.boards-card .board-bars { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.boards-card .board-rows { flex: 1; display: flex; flex-direction: column; justify-content: space-between; }
-.boards-card .board-rows .bar-row { margin-bottom: 0; }
+/* 板块资金流卡：按内容自然高度排布、顶部对齐（不强制与同行等高）。
+   若用 flex 撑满 + space-between 均分，行间距会被拉大、观感稀疏；
+   因此改为不强制等高、行距走 .bar-row 默认紧凑间距。 */
+/* .boards-card 走网格默认拉伸：与同行卡片等高（长度不变），
+   空间靠「更多板块条」填充，而不是靠拉大行距。 */
+/* 不再给 card-body / board-bars 设 flex:1 撑满：
+   窄屏单列时卡片会被网格拉伸，撑满逻辑会把末行条撑成大色块。
+   改为内容自然高度，靠板块条数量（40 条）填满。 */
+.boards-card .board-rows { display: flex; flex-direction: column; }
+.boards-card .board-rows .bar-row { margin-bottom: var(--space-2); }
 /* 全部板块弹窗里的分区小标题（行业 / 概念） */
 .boards-section-title { margin: 0 0 10px; color: #6b7a83; font-size: 12px; font-weight: 650; }
 
@@ -948,4 +950,51 @@ body { background: #f3f5f3; }
   .overview-alert .link-btn { margin: 2px 0 0 38px; }
   .overview-metrics .tile { padding: 12px 13px; }
   .overview-metrics .tile-value { font-size: 18px; }
+}
+
+/* ---------- 深度分析（SOP Step 7 六段式）版式 ----------
+   用于 RealFundModal / 后续其他详情弹窗的「深度分析」区块（组件 DeepAnalysis.jsx）。
+   只做版式，不改内容：段落缺数据时由后端给出说明文字，前端如实呈现。 */
+.da-sec { margin-top: 14px; }
+.da-sec-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  margin-bottom: 7px;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.da-sub-title { font-size: 12.5px; font-weight: 600; margin: 9px 0 3px; }
+.da-verdict {
+  border-left: 3px solid var(--accent, #3b6ef6);
+  background: var(--accent-soft, #eef3fe);
+  padding: 9px 12px;
+  border-radius: 6px;
+  line-height: 1.75;
+  font-size: 12.5px;
+}
+.da-note { color: var(--text-mute, #5b6675); font-size: 12.5px; line-height: 1.8; }
+.da-list { margin: 0; padding-left: 18px; line-height: 1.85; font-size: 12.5px; }
+.da-list li { margin-bottom: 2px; }
+.da-table-wrap { overflow-x: auto; }
+.da-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.da-table th,
+.da-table td {
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--line, #ececec);
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.55;
+}
+.da-table th { color: var(--text-mute, #5b6675); font-weight: 600; white-space: nowrap; }
+/* 首列/次列不换行：否则窄列会被逐字挤成竖排 */
+.da-table td.nw { white-space: nowrap; }
+.da-table tr:last-child td { border-bottom: none; }
+/* 行内小注（跟在数值后面，不单独占一列，省宽度） */
+.da-inline-note {
+  color: var(--text-mute, #5b6675);
+  font-size: 11.5px;
+  margin-left: 8px;
+  white-space: normal;
 }

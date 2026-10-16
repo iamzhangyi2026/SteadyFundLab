@@ -18,7 +18,7 @@
    拿不到数据就明确标「无数据」，绝不拿旧值冒充新值。
    HTTP 200 但返回 0 条，等同于失败。
 
-接口可用性（akshare 1.18.94 实测）
+接口可用性（akshare 1.18.94）
 ------------------------------------------------
 可用：
     fund_open_fund_info_em              单只基金历史净值（单位/累计）
@@ -57,7 +57,7 @@ STALE_DAYS = get("data_quality", "stale_nav_days", 3)
 # 分红识别阈值：单位净值变动与累计净值变动相差多少个百分点，
 # 就判定为「高度疑似分红除息」。
 # 取 3 个百分点是因为：真实市场波动下两者应当同步（差值接近 0），
-# 只有分红/拆分才会让差值显著拉开。实测分红案例中差值达 17 个百分点。
+# 只有分红/拆分才会让差值显著拉开，分红案例中差值达 17 个百分点。
 DIVIDEND_GAP_HINT = get("data_quality", "dividend_gap_pct", 3.0)
 
 
@@ -86,7 +86,7 @@ _DAILY_CACHE_TTL = 600  # 秒。10 分钟内复用，超过则重新拉取
 _daily_fetch_lock = threading.Lock()
 # 单次拉取硬超时。源站抽风/被限流时不能让请求线程无限挂起，
 # 否则会直接表现为「下单没反应」。超时即放弃，交给定居/落库的降级逻辑处理。
-# 实测 ak.fund_open_fund_daily_em 全市场表实拉约 28s，原 25s 偏紧会超时失败，
+# ak.fund_open_fund_daily_em 全市场表拉取约 28s，超时阈值低于 30s 会失败，
 # 调到 60s 留足余量（启动预热/续热也走这个超时）。
 _DAILY_FETCH_TIMEOUT = get("data_quality", "daily_fetch_timeout", 60.0)
 
@@ -375,7 +375,7 @@ def fetch_boards(board_type: str = "industry", concept_names: list[str] | None =
     板块刷新恒失败（数据停在 09-19）；概念侧更是完全没有抓取代码。
 
     为什么行业有两个源：
-        实测东财的股票板块接口（stock_board_industry_name_em）
+        东财的股票板块接口（stock_board_industry_name_em）
         连接被拒绝，同花顺的接口可用。单一依赖任何一个源，
         都会在某天源站抽风时全盘失效。这里同花顺为主、东财为备，
         主源挂了自动切备用源，并在返回值里标明实际用的是哪个，
@@ -527,7 +527,7 @@ def fetch_industry_allocation(fund_code: str, year: int | None = None) -> list[d
 
         # 接口返回的是该基金**多个报告期**的行业配置，不止指定年份。
         # 必须按「截止时间」取最新一期，否则不同年份的数据会混在一起——
-        # 实测 005827 返回 42 条，里面有两个"制造业"（43.78% 与 38.19%），
+        # 005827 返回 42 条，里面有两个"制造业"（43.78% 与 38.19%），
         # 分属 2025 和 2024 两期。不筛就会算出重复且矛盾的行业占比。
         date_col = next((c for c in df.columns if "时间" in c), None)
         report_date = ""
@@ -795,7 +795,7 @@ def anomalies_to_json(anomalies: list[dict], path) -> None:
 def warm_akshare() -> float:
     """预热 akshare（**进程内只此一次真正 import**，之后调用走缓存）。
 
-    为什么单独做这一步：实测首次 `_import_akshare()` 要 **~2.5 秒**
+    为什么单独做这一步：首次 `_import_akshare()` 要 **约 2.5 秒**
     （pandas / numpy / 大量子模块），任何第一次触发抓取的请求都会「莫名卡住几秒」。
     预热把这段耗时挪到启动后的后台线程，不占启动时间、也不拖慢用户请求。
     返回耗时（秒），便于观测。
@@ -808,7 +808,7 @@ def warm_akshare() -> float:
 def fetch_nav_many(codes, workers: int = 6) -> dict:
     """**并发**抓取多只基金净值（线程池，网络 IO 密集 → 线程有效）。
 
-    为什么不用串行：实测单只稳态 ~0.7~0.9s，134 只串行 ≈ 2 分钟；
+    为什么不用串行：单只稳态约 0.7~0.9s，134 只串行约 2 分钟；
     6 并发可压到 **~20 秒**。失败的单只不影响其他（各自独立返回）。
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed

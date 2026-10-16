@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react'
 import Modal from './Modal'
 import StatStrip from './StatStrip'
 import NetValueChart from './NetValueChart'
+import DeepAnalysis from './DeepAnalysis'
 import { money, pct } from '../lib/format'
 
-// B 区单只基金详情弹窗：持仓 + 指标 + 净值曲线 + AI 分析。
-// 数据来自 /api/real/holdings/{code}/detail（B 区独立抓行情 + 规则分析）。
+// B 区单只基金详情弹窗：持仓 + 指标 + 净值曲线 + 深度分析。
+// 数据来自 /api/real/holdings/{code}/detail（B 区独立抓行情 + **代码规则**生成六段式分析）。
 const API = '/api/real'
 
 const toneOf = (n) => (n > 0 ? 'up' : n < 0 ? 'down' : undefined)
@@ -80,10 +81,17 @@ export default function RealFundModal({ open, fundCode, onClose }) {
                 values={series.map((s) => s.nav)}
                 height={220}
               />
-              <div className="sub-card">
-                <div className="muted" style={{ marginBottom: 6 }}>AI 分析</div>
-                <div style={{ lineHeight: 1.8, fontSize: 13, whiteSpace: 'pre-line' }}>{data.analysis}</div>
-              </div>
+              {/* 深度分析：按 **SOP Step 7 六段式**呈现（结论 / 数据 / 催化 / 分化 / 信号 / 建议）。
+                  注意：这里**不是 AI 生成**，而是后端用代码规则算出来的（B 区为隔离区，
+                  不调外部大模型），所以标题就叫「深度分析」，不挂 AI 名头。
+                  本区拿不到的段落（如无资讯源的催化事件）如实显示说明文字，不编造。 */}
+              <DeepAnalysis sections={data.sections} title="深度分析" />
+              {!data.sections?.conclusion && (
+                <div className="sub-card">
+                  <div className="muted" style={{ marginBottom: 6 }}>深度分析</div>
+                  <div style={{ lineHeight: 1.8, fontSize: 13, whiteSpace: 'pre-line' }}>{data.analysis}</div>
+                </div>
+              )}
             </>
           ) : (
             <div className="muted">{data.error || '暂无分析数据'}</div>

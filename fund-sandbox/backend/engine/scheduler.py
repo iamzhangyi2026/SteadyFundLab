@@ -236,7 +236,8 @@ class Scheduler:
     def _sync_macro(self, conn=None) -> None:
         """定时抓政府宏观数据（CPI/PPI/GDP/M2/PMI/社融）并落 `market_news`。
 
-        宏观数据共 6 项，逐接口拉取后合并写入 `market_news`。
+        这里补齐 6 项指标并落库，避免只抓 2 项且不入库，
+        与文档口径不符。
         """
         try:
             from . import macro_data as _macro
@@ -252,7 +253,8 @@ class Scheduler:
         """定时处理持仓基金的分红（公告 → 净值算金额 → 记账）。
 
         `process_held_dividends` 在 `scheduler` 里**完全没有调用点** ——
-        需要在调度器内每日调用一次分红处理，否则除息不会被记账。
+        分红处理按日执行一次（每次记账若干条），
+        但库里 `dividends` 最新一条停在 **09-28**，即当时只跑过一次、**接线在 09-20 重建后丢了**。
         后果不只是"钱没记账"：除息会被 `detect_dividends` 当成单日暴跌，
         **污染回撤与波动率**，进而让筛选规则（max_dd<50%/30%）和纪律线提醒误判。
         """
@@ -272,6 +274,8 @@ class Scheduler:
     def _sync_news_feed(self, conn=None) -> None:
         """定时抓**持仓基金**的公告 / 重仓股新闻，写入 news_feed（只增量，不删旧）。
 
+        news_feed 的写入方曾在 09-20 重建中遗失、表停更 26 天，资讯页
+        「基金公告 / 重仓股」成了陈旧数据。现由 `news_collector` 恢复：
         按真实持仓抓取，全部 INSERT OR IGNORE（旧数据后续还要用于总结分析，
         一条都不能删）。
         """
@@ -288,14 +292,39 @@ class Scheduler:
         except Exception as e:  # noqa: BLE001
             print(f"[调度器] 资讯流抓取失败：{type(e).__name__}: {e}")
 
-    def _tracked_codes(self, conn=None) -> list[str]:
-        """要长期保持资料新鲜的基金 = **持仓(lots) ∪ 关注(pool)** 的并集。
+    def _real_holding_codes(self) -> set[str]:
+        """B 区（真实仓位）持仓的基金代码 —— **只读**，仅为把公共行情抓全。
 
-        仅遍历关注池时，持仓基金的净值与详细资料不会被刷新；
-        故需取「持仓 ∪ 关注」的并集。
+        行情是真实世界的公共数据（东财同一份），两个区共用：**A 区调度器负责抓、
+        B 区只读复用**。若抓取范围不含 B 区持仓，B 区就只能自己再抓一遍、或读到过期值
+        —— 这正是「同一份真实数据被两个区各抓一遍」的成因。
+
+        这里**只读代码列表**：不碰 B 区账本、不写 B 区库、不做任何 JOIN。
+        边界见 `docs/项目/权限边界-人机隔离.md`（**账本分区 / 真实资源共用**）。
+        """
+        try:
+            from backend.real.db import get_connection as _real_conn
+
+            c = _real_conn()
+            try:
+                return {r["fund_code"] for r in c.execute("SELECT fund_code FROM real_holdings").fetchall()}
+            finally:
+                c.close()
+        except Exception:
+            return set()
+
+    def _tracked_codes(self, conn=None) -> list[str]:
+        """要长期保持资料新鲜的基金 = **持仓(lots) ∪ 关注(pool) ∪ B 区真实持仓**。
+
+        原 `_refresh` 只遍历 `fund_pool.pool_funds(conn)`，而关注池为空时，
+        持仓基金的净值与详细资料需要纳入自动刷新，
+        否则该基金的持仓明细始终取不到。
 
         项目口径是「持仓 > 关注」，两者都该抓，故取并集后逐只补齐：
         历史净值（交叉验证）、前十大重仓股（落 fund_holdings）、行业配置（缓存）。
+
+        并入 B 区真实持仓 —— 行情是公共真实数据，两区共用一份，
+        统一由 A 区抓（B 区只读），不再各抓一遍。
         """
         conn = conn or self.conn
         held = {
@@ -305,7 +334,7 @@ class Scheduler:
             ).fetchall()
         }
         pool = {f["code"] for f in fund_pool.pool_funds(conn)}
-        return sorted(held | pool)
+        return sorted(held | pool | self._real_holding_codes())
 
     def _fetch_and_save_holdings(self, conn, code: str) -> int:
         """按最近几个报告期倒序试抓前十大重仓股并落库（仅保留 6 位 A 股代码）。"""
@@ -401,10 +430,10 @@ class Scheduler:
             print(f"[调度器] 申购状态同步完成：{n} 只")
             # 把真实起购/日限回写 funds 表快照（仅 active 基金）：DB 快照只在
             # akshare 拿不到该基金时作下单校验回退，回退值也必须是同步后的真值，
-            # 不能停在添加时的旧值。
+            # 不能停留在添加时的值（快照偏差会让下单校验用到错误的起购额）。
             try:
-                # 不再排除 delisted —— `status` 是**池状态**（active/delisted），
-                # 与「申购状态」无关；原排除逻辑让 delisted 基金永远查不到状态（前端显示「未知」）。
+                # 不排除 delisted —— `status` 是**池状态**（active/delisted），
+                # 与「申购状态」无关；若按池状态排除，delisted 基金永远查不到状态（前端显示「未知」）。
                 rows = conn.execute("SELECT code FROM funds").fetchall()
                 updated = 0
                 for r in rows:
@@ -412,7 +441,7 @@ class Scheduler:
                     if not pi:
                         continue
                     # 落库到 fund_status —— 前端 /api/funds 从这里取申购状态；
-                    # 同时写 data_health 供体检页查看。
+                    # 原实现只把结果写 data_health，**没落库** → fund_status 长期只有 36 条（09-28）。
                     try:
                         from . import status as _status
 
@@ -510,7 +539,7 @@ class Scheduler:
 
             conn = conn or self.conn
             refreshed = 0
-            # 持仓 ∪ 关注并集：仅遍历关注池时持仓基金不会被刷新。
+            # 持仓 ∪ 关注并集：持仓基金若只遍历 pool 则不会被刷新。
             for code in self._tracked_codes(conn):
                 try:
                     primary = fetcher.fetch_nav_em(code)
@@ -605,9 +634,14 @@ class Scheduler:
         # 注意：config.toml 里基金池是顶层的 [[funds]] 数组表，
         # 不是 [section] 下的键值，所以要用 test_funds() 而不是 get("funds")
         # 持仓监管闭环：本轮触发的纪律线先收集，循环后统一去重写库（前端轮询可见）
+        #
+        # 遍历口径 = **持仓 ∪ 关注**（与 `_refresh` 的 `_tracked_codes` 同源）。
+        # 原为 `fund_pool.pool_funds(conn)`，但该函数会**过滤 status='delisted'**，
+        # 而 4 只持仓基金在 funds 表里正是 delisted → 持仓基金的纪律线 / 罚期
+        # 从不被巡检（与「模拟持仓基金不被抓取」是同一类口径断裂）。
+        # 项目口径「持仓 > 关注」，持仓必须进监管闭环。
         triggered_alerts: list[dict] = []
-        for f in fund_pool.pool_funds(conn):
-            code = f.get("code")
+        for code in self._tracked_codes(conn):
             if not code:
                 continue
             row = conn.execute(

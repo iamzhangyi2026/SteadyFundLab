@@ -217,7 +217,7 @@ def share_class_of(conn, code: str) -> tuple[str, str]:
     """QDII 份额币种口径：(kind, note)。'' 表示非 QDII。
 
     人民币份额净值**含**汇兑损益、美元份额**不含** —— 不标出来会把「汇率驱动」
-    误读成「标的趋势」（实测两种份额近 1 年差 7.43 个百分点）。
+    误读成「标的趋势」（两种份额近 1 年差 7.43 个百分点）。
     """
     try:
         row = conn.execute("SELECT name, is_qdii FROM funds WHERE code = ?", (str(code),)).fetchone()

@@ -3,10 +3,10 @@
 
 背景
 ----
-`news_feed`（资讯页「基金公告 / 重仓股」的数据源）由本模块写入：
-**旧数据一律保留**（后续还要用于总结分析）。
+`news_feed`（资讯页「基金公告 / 重仓股」的数据源）缺少写入方时，数据会停留在历史日期。
+本模块负责恢复抓取，**旧数据一律保留**（后续还要用于总结分析）。
 
-口径（持仓优先于「关注」）
+口径：抓取范围按持仓而非关注列表
 ------------------------------------
   - 抓取范围 = **真实持仓基金**（lots 有剩余份额的）+ 其前十大重仓股，
     与「交易池/关注列表」无关 —— /api/news 本来也只按持仓过滤。
@@ -30,20 +30,40 @@ STOCK_NEWS_LIMIT = 10
 # 新闻正文入库截断长度（长文塞库没意义，标题+摘要已够阅读）
 CONTENT_MAX = 400
 # 基金公告（人事/分红）东财接口不返原文链接，给一个可点开的公告列表页，
-# 否则资讯页「基金公告」永远没有「阅读全文」按钮。
-# 实测该 URL 对场内外基金均返回 HTTP 200 且页面含「公告」。
+# 否则资讯页「基金公告」永远没有「阅读全文」按钮（该 URL 返回 HTTP 200
+# 且页面含「公告」）。
 FUND_ANNOUNCE_URL = "https://fundf10.eastmoney.com/jjgg_{code}.html"
 
 
 def held_funds(conn: sqlite3.Connection) -> List[Dict[str, str]]:
-    """当前**真实持仓**的基金（lots 有剩余份额的）。"""
+    """当前需要抓公告/新闻的基金 = **A 区真实持仓** ∪ **B 区真实持仓**。
+
+    新闻/公告是真实世界的公共资料，两个区共用一份（边界=**账本隔离、数据共用**）。
+    A 区抓一次落公共表，B 区只读复用 —— 所以抓取范围必须覆盖 B 区持仓，
+    否则 B 区弹窗的「催化事件」永远没有素材。
+
+    B 区侧只读 `fund_code` / `fund_name`（不碰其账本、不写 B 区库）。
+    """
     rows = conn.execute(
         "SELECT DISTINCT l.fund_code AS code, COALESCE(f.name, l.fund_code) AS name "
         "FROM lots l LEFT JOIN funds f ON f.code = l.fund_code "
         "WHERE l.status='active' AND l.remaining_shares > 0 "
         "ORDER BY l.fund_code"
     ).fetchall()
-    return [{"code": r["code"], "name": r["name"]} for r in rows]
+    out: Dict[str, str] = {r["code"]: r["name"] for r in rows}
+    # 并入 B 区（真实仓位）持仓
+    try:
+        from backend.real.db import get_connection as _real_conn
+
+        c = _real_conn()
+        try:
+            for r in c.execute("SELECT fund_code, fund_name FROM real_holdings").fetchall():
+                out.setdefault(r["fund_code"], r["fund_name"] or r["fund_code"])
+        finally:
+            c.close()
+    except Exception:
+        pass
+    return [{"code": k, "name": v} for k, v in sorted(out.items())]
 
 
 def _is_stock_code(code: str) -> bool:

@@ -17,7 +17,7 @@ const RESOURCES = {
   marketNews: { url: '/api/market-news', params: { limit: 50 } },
   intel: { url: '/api/intel', params: { limit: 100 } },
   // 健康页渲染的是「数据源抓取状态」字段（source/data_type/record_count），
-  // 数据源在 /api/data-health（/api/health 返回持仓健康度，无 items 字段）。
+  // 数据源在 /api/data-health；错绑到 /api/health 会因返回结构不含 items 导致页面恒空。
   health: { url: '/api/data-health' },
   // 持仓六维健康度（趋势/持续性/相对强度/回撤/估值/舆情 + 四档处置）
   positionHealth: { url: '/api/health' },
@@ -42,7 +42,8 @@ const AUTO_KEYS = [
   // 提取事件）。这里把 intel 纳入轮询，页面才会自动显示新采集到的情报，不必手动点「采集」。
   'intel',
   'portfolioCurve',
-  // 数据源状态是轻量只读，进轮询开销可忽略。
+  // 健康页恒空的两个成因：url 绑定错误（须指向 /api/data-health）、未进轮询列表
+  // 而从未发起过请求。数据源状态是轻量只读，进轮询开销可忽略。
   'health',
 ]
 
@@ -142,11 +143,11 @@ export const useStore = create((set, get) => {
     await get().fetch_funds()
     return r
   }
-  // 原实现调 `POST /api/funds` 发 `{fund_code, fetch_nav}` —— **契约完全不匹配**：
-  // 后端是 `POST /api/funds/add`，字段名是 `code`，且 `reason` **必填**
-  // （业务规则：添加候选必须说明"为什么添加"）。原调用必然 404/422，添加基金从来没成功过。
-  actions.addFund = async (code, reason) => {
-    const r = await apiPost('/api/funds/add', { code, reason })
+  // 后端接口是 `POST /api/funds/add`，字段名是 `code`，且 `reason` **必填**
+  // （业务规则：添加候选必须说明"为什么添加"）；接口契约不匹配会返回 404/422。
+  // 人工在界面添加 → decision_source='human'：后端据此**不强制** reason。
+  actions.addFund = async (code, reason = '', decisionSource = 'human') => {
+    const r = await apiPost('/api/funds/add', { code, reason, decision_source: decisionSource })
     await get().fetch_funds()
     return r
   }
