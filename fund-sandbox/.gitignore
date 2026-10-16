@@ -1,5 +1,5 @@
 
 # LLM API Key（加密存储，机器绑定，不入仓库）
 data/llm_config.json
-# 翻译用多厂商免费 key 池（明文，机器绑定，绝不入仓库）
+# 翻译用多厂商免费 key 池（明文，机器绑定，不入仓库）
 data/llm_pool.json
