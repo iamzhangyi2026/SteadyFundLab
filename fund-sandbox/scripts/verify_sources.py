@@ -39,7 +39,7 @@ except ImportError:
 
 from backend.config import test_funds  # noqa: E402
 
-TEST_FUND = test_funds()[0]["code"] if test_funds() else "005827"
+TEST_FUND = test_funds()[0]["code"] if test_funds() else "040001"
 
 
 def probe(label: str, fname: str, *args, **kwargs) -> dict:

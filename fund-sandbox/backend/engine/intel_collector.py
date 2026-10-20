@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Iterable
 
 # ---------------------------------------------------------------------------
@@ -75,10 +75,6 @@ NEGATIVE_KEYWORDS = [
     "冲突升级", "制裁", "断供", "战争", "衰退", "通缩", "失业",
 ]
 
-# 北京时间
-_TZ = timezone(timedelta(hours=8))
-
-
 def _normalize(text: str | None) -> str:
     """把文本转成便于关键词匹配的形式：中文/英文/数字保留，其余变空格，去重。"""
     if not text:
@@ -120,11 +116,11 @@ def _classify(text: str) -> tuple[str | None, str]:
 def _title_date(pub_time: str | None) -> str:
     """从 market_news.pub_time 取日期部分；解析失败返回今天。"""
     if not pub_time:
-        return datetime.now(_TZ).strftime("%Y-%m-%d")
+        return datetime.now().strftime("%Y-%m-%d")
     try:
         return str(pub_time)[:10]
     except Exception:  # noqa: BLE001
-        return datetime.now(_TZ).strftime("%Y-%m-%d")
+        return datetime.now().strftime("%Y-%m-%d")
 
 
 def _infer_concepts(title: str, max_n: int = 3) -> str:
@@ -155,8 +151,8 @@ def gate_category(cat: str, is_official: bool) -> str:
     """类别闸门：`geo` / `conference` **只认官媒**，非官媒一律降级为 `other`。
 
     为什么：这两类属「官方口径」类（外交/地缘表态、官方会议），非官媒来源的说法
-    不能当官方口径用。09-17 立此闸门，并要求**写入路径与回填脚本共用同一个函数**
-    —— 当时两次回填都因「各写一套逻辑」而漏掉这道闸门。
+    不能当官方口径用。**写入路径与回填脚本必须共用同一个函数**，
+    否则回填时容易因「各写一套逻辑」而漏掉这道闸门。
 
      gate_category 已恢复并维护于此：
     新写入事件混入 564 条非官媒 geo/conference，违反一致性不变量。
@@ -175,7 +171,7 @@ def collect_from_market_news(
 
     返回本次实际写入（或 dry_run 时「本会写入」）的条数。
     """
-    since = (datetime.now(_TZ) - timedelta(days=lookback_days)).strftime("%Y-%m-%d 00:00:00")
+    since = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d 00:00:00")
     rows = conn.execute(
         """
         SELECT id, title, summary, source, link, pub_time, is_official
@@ -217,7 +213,7 @@ def collect_from_market_news(
 
         detail = summary.strip() or title.strip()
         source = f"auto:rss:{row['source'] or 'unknown'} | {row['link'] or ''}".strip(" | ")
-        now = datetime.now(_TZ).isoformat(timespec="seconds")
+        now = datetime.now().isoformat(timespec="seconds")
 
         if not dry_run:
             if not dup:

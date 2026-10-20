@@ -51,8 +51,7 @@ def _cols(df):
 # 公共数据层：行情复用（账本分区 / 数据共用）
 # ---------------------------------------------------------------------------
 # 行情是真实世界的公共数据（东财同一份），**不该两个区各抓一遍**：谁需要谁登记，
-# 抓到的落一份公共表，重复的直接用缓存（只有真实持仓与沙盒交易需要隔离账本，
-#   其余资讯类资料两区共用）。
+# 抓到的落一份公共表，重复的直接用缓存。
 #
 # 边界：**账本隔离**（真实持仓 = 真钱 / 沙盒 = 模拟），
 #       **数据共用**（行情 / 新闻 / 规则 / 日历 —— 全是真实世界的资料）。
@@ -91,9 +90,9 @@ def _read_shared_series(code: str) -> list[dict]:
     ]
     # 陈旧保护：公共表太久没更新（A 区还没刷到这只）→ 交回调用方实时抓
     try:
-        from datetime import date as _date
+        from datetime import date as _date, datetime as _datetime
 
-        if (_date.today() - _date.fromisoformat(out[-1]["date"])).days > _SHARED_STALE_DAYS:
+        if (_datetime.now().date() - _date.fromisoformat(out[-1]["date"])).days > _SHARED_STALE_DAYS:
             return []
     except Exception:
         pass

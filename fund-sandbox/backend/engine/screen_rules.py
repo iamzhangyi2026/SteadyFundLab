@@ -317,10 +317,8 @@ def ensure_nav(conn, codes, min_days: int = WINDOW_DAYS) -> dict:
     return stat
 
 
-# ⚠️ ret_1y 口径说明：
-# 固定倒第 N 个点的取法不可靠 —— 当序列长度不是 250 时，
-# 它取的既不是窗口首值、也不是"近 1 年"，口径会随序列变长越偏越多。
-# 本模块 evaluate_fund 传的是 **近 250 条窗口**，"近 1 年"就用**窗口首值**。
+# 近 1 年收益率以**窗口首值**为基准（evaluate_fund 传入「近 250 条窗口」，
+# 窗口首值即窗口内最早一条，对应「近 1 年」的起点）。
 def ret_1y(series: list[float]) -> Optional[float]:
     """近 1 年收益率（%）：以**窗口首值**为基准。
 

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-fund-sandbox LLM客户端
-- 不硬编码API密钥
-- 从加密配置读取密钥
+fund-sandbox LLM 客户端
+- 不硬编码 API 密钥
+- 从 data/llm_config.json 读取密钥（机器特征派生的密钥流 XOR + base64 混淆存储）
 - 支持多模型路由
 """
 from __future__ import annotations
@@ -35,25 +35,25 @@ class LLMClient:
         return Path(__file__).resolve().parents[3] / "data" / "llm_config.json"
     
     def _load_config(self) -> None:
-        """加载LLM配置（解密API密钥）"""
+        """加载 LLM 配置（还原 API 密钥）"""
         if not self._config_path.exists():
             return
-        
+
         try:
             cfg = json.loads(self._config_path.read_text(encoding="utf-8"))
             self._base_url = cfg.get("base_url", self._base_url)
             self._model = cfg.get("model", self._model)
             self._system_prompt = cfg.get("system_prompt", "")
-            
-            # 解密API密钥（基于机器特征）
+
+            # 还原 API 密钥（按机器特征派生密钥流，与写入端同一算法）
             if "encrypted_key" in cfg:
                 self._api_key = self._decrypt_key(cfg["encrypted_key"])
         except Exception:
             pass
-    
+
     @staticmethod
     def _decrypt_key(encrypted: str) -> Optional[str]:
-        """解密API密钥（XOR加密）"""
+        """还原 API 密钥（XOR 混淆的逆运算，与 api_ai_config_set 写入端同一算法）"""
         try:
             mac = uuid.getnode()
             hostname = platform.node()

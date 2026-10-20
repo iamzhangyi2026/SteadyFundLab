@@ -18,7 +18,7 @@ const CATS = [
   { v: 'macro', label: '宏观' },
 ]
 const CAT_LABEL = Object.fromEntries(CATS.map((c) => [c.v, c.label]))
-// 利好/利空属「市场情绪/状态」，按项目配色约定用语义色板、不沾红绿：
+// 利好/利空属「市场情绪/状态」，按项目配色准则用语义色板、不沾红绿：
 // 利好=teal(ok) ✓、利空=amber(warn) ⚠，并一律配文字，色弱用户也能读。
 // 与「分析·人读叙述」保持一致（利好=teal），消除红绿在多处语义互相反转。
 // 取值缺失时兜底成 neutral，避免拼出 "tag undefined" 变成没有底色的裸标签。

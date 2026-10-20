@@ -82,7 +82,7 @@ def usd_cny_trend(days: int = 30, conn=None) -> dict:
     if own:
         conn = get_connection()
     try:
-        start = (date.today() - timedelta(days=days)).isoformat()
+        start = (datetime.now().date() - timedelta(days=days)).isoformat()
         rows = conn.execute(
             "SELECT rate FROM fx_rate WHERE pair='USD/CNY' AND rate_date >= ? "
             "ORDER BY rate_date ASC",

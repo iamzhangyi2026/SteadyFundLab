@@ -48,9 +48,8 @@ def get(sec: str, key: str, default: Any = None) -> Any:
 
 
 # ──────────────────────────────────────────────────────────────
-# 基金池（候选池）
-# 原 test_funds 是硬编码假列表；改为读取真实 funds 表（status=active），
-# 这样 screener / refresh 直接作用于真实候选池，无需维护假数据。
+# 基金池（候选池）：读 funds 表 status='active' 的真实数据，
+# screener / refresh 直接作用于真实候选池。
 # ──────────────────────────────────────────────────────────────
 def test_funds() -> list[dict]:
     try:
@@ -72,13 +71,18 @@ def test_funds() -> list[dict]:
             ]
         finally:
             conn.close()
-    except Exception:
+    except Exception as e:
+        # 不静默：候选池为空时界面上能看到原因（库未初始化 / 连接失败），
+        # 而不是「筛选结果为空」这种无法归因的表现。
+        print(f"[config] test_funds 读取 funds 表失败：{type(e).__name__}: {e}")
         return []
 
 
 # ──────────────────────────────────────────────────────────────
 # 筛选规则：主轨（分位低+趋势向上）来自 config [rules]/[health]；
-# 与 screen_rules.screen_candidates 的键保持一致。
+# main_track / backup_track / high_vol_relax 三个轨的键名与
+# screen_rules.screen_candidates 消费的 rules 键一致；
+# position_limits 由 screener 的仓位建议单独消费，不在筛选轨内。
 # ──────────────────────────────────────────────────────────────
 SCREEN_RULES: dict = {
     # 主轨：分位低 + 趋势向上
@@ -102,7 +106,9 @@ SCREEN_RULES: dict = {
 
 
 # ──────────────────────────────────────────────────────────────
-# LLM 配置：从 data/llm_config.json 读取（加密存储，明文不落盘）
+# LLM 配置：从 data/llm_config.json 读取。
+# 密钥不明文落盘——存的是按机器特征派生的密钥流 XOR 后 base64 的串
+# （可逆混淆：防随手翻看，不防针对性提取；能读文件又看得到本源码即可还原）。
 # ──────────────────────────────────────────────────────────────
 def get_llm_config() -> dict:
     data_dir = ROOT / "data"

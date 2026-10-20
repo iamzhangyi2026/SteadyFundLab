@@ -356,8 +356,8 @@ if __name__ == "__main__":
     print(f"  {pr['detail']}")
 
     print("\n定投计划：")
-    funds = [{"code": "005827", "name": "易方达蓝筹精选混合"},
-             {"code": "000001", "name": "示例基金"}]
+    funds = [{"code": "040001", "name": "华安创新混合"},
+             {"code": "000834", "name": "大成纳斯达克100指数(QDII)"}]
     for p in plan_dingtou(funds):
         print(f"  {p['fund_code']} {p['fund_name']}：{p['amount']} 元/周  {p['note']}")
 

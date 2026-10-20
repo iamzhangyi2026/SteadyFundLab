@@ -118,7 +118,8 @@ export default function Positions() {
             {tab === 'hold' && (
               <ExportButton rows={posRows} fileName="持仓明细" sheetName="持仓" notify={notify} />
             )}
-            {/* 这两个是「切换视图」而非「执行动作」，故做成 Tab 而非并列按钮，避免与买卖操作混淆 */}
+            {/* 这两个是「切换视图」，不是「执行动作」，做成 Tab 而非两个并列按钮，
+                避免被当成操作按钮 */}
             <div className="tabs" role="tablist" aria-label="持仓 / 关注 切换">
               <button
                 className="tab"
@@ -165,7 +166,7 @@ export default function Positions() {
                       <tr key={p.fund_code}>
                         <td>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                            {/* 用原生 button 而非 <strong onClick>，保证键盘可聚焦、可访问 */}
+                            {/* 用真按钮承载点击（外观仍是加粗文字），保证键盘可达 */}
                             <button
                               className="name-btn"
                               onClick={() => openDetail(p.fund_code, p.fund_name)}

@@ -2,7 +2,7 @@
 """B 区独立数据库连接。
 
 与 A 区 fund_sandbox.db **物理分离**：不同文件、不同连接、不跨库 JOIN。
-这是存储分离原则的落点。
+这是隔离原则（存储分离）的落点。
 """
 from __future__ import annotations
 

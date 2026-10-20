@@ -63,7 +63,8 @@ def refresh_sector_news(
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         # `fetch_boards` 返回的键是 board_name / board_code /
-                        # main_net_inflow，取值时必须用这些键（用 sector / net_inflow 会全取空）。
+                        # main_net_inflow，原代码却取 sector / net_inflow → **全取空**，
+                        # 结果 fetched=90 但几乎全部 INSERT 失败（saved 恒 1）。
                         str(b.get("board_name", "") or b.get("sector", "")),
                         str(b.get("board_code", "")),
                         float(b.get("change_pct", 0) or 0),
@@ -100,7 +101,7 @@ def hot_concept_names(conn: sqlite3.Connection, limit: int = 10, days: int = 7) 
     用它会造成「鸡生蛋」；直接用标题匹配更稳。
 
     长名优先匹配（先试「固态电池」再试「电池」），每条标题最多取 3 个概念
-    —— 与 09-17 `infer_concepts` 的设计一致。
+    —— 与 `infer_concepts` 的概念映射设计一致。
     """
     try:
         from ..data.fetcher import fetch_concept_name_list

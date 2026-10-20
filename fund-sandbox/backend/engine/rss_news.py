@@ -5,7 +5,7 @@
 只服务总览「最新资讯」，与分析页「资讯流」(news_feed, 基金公告+重仓股) 是两套数据，
 互不混用。本模块不做任何交易/分析判断，只负责「订阅 RSS → 落库」这一件事。
 
-数据源（已验证可用的官方/代理 RSS，后续新增均须先抓取确认 entries>0）：
+数据源（已验证「还活着」的官方/代理 RSS，后续新增均须先 live 抓取确认 entries>0）：
   - 中国新闻网财经  https://www.chinanews.com.cn/rss/finance.xml  （主力，纯财经，UTF-8，200/30条）
   - 36氪            https://www.36kr.com/feed                      （科技财经，200/30条）
   - 日经中文网(FeedX代理)  https://feedx.net/rss/nikkei.xml        （亚太宏观/市场，中文，200/20条）
@@ -48,8 +48,7 @@ from backend.db import get_connection
 # 常量
 # =============================================================================
 
-# 北京时间时区。RSS 的 pubDate 是带时区的（如 +0800），统一转成北京时间存库。
-_TZ = timezone(timedelta(hours=8))
+# RSS 的 pubDate 是带时区的（如 +0800），统一转本机时区存库。
 
 # 抓取间隔（秒）：30 分钟。RSS 是「拉式订阅」，发布方预期阅读器低频轮询。
 FETCH_INTERVAL = 30 * 60
@@ -82,7 +81,7 @@ FEEDS = [
 # 源清单覆盖多个站点；
 # 选取准则：
 # ① 能抓到（entries>0）② 原文能读。
-#   可用：中新网时政/世界 30、新华网财经 300、人民网财经 100、CNBC 30、
+#   可用源：中新网时政/世界 30、新华网财经 300、人民网财经 100、CNBC 30、
 #            MarketWatch 10（301 重定向，feedparser 自动跟随）、Investing 10、UN 30、WTO 10、
 #            Yahoo 19（原 `finance.yahoo.com/news/rssindex` 已 404，改用 `feeds.finance.yahoo.com`）
 #   未通过：新华网原 `xinhuanet.com` 域名 403 → 换 `news.cn` 成功
@@ -121,7 +120,7 @@ def _strip_html(text: str) -> str:
 
 
 def _parse_time(entry, fallback: str) -> str:
-    """解析发布时间为北京时间 ISO 字符串（YYYY-MM-DD HH:MM:SS）。
+    """解析发布时间为本机时区 ISO 字符串（YYYY-MM-DD HH:MM:SS）。
 
     feedparser 的 published_parsed / updated_parsed 是 UTC struct_time。
     无发布时间的条目回退到 fallback（抓取时间），避免它永远进不了「今日」过滤。
@@ -130,7 +129,7 @@ def _parse_time(entry, fallback: str) -> str:
     if not st:
         return fallback
     try:
-        dt = datetime(*st[:6], tzinfo=timezone.utc).astimezone(_TZ)
+        dt = datetime(*st[:6], tzinfo=timezone.utc).astimezone()
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError, OverflowError):
         return fallback
@@ -152,7 +151,7 @@ def fetch_market_news(conn: sqlite3.Connection) -> int:
 def _fetch_unlocked(conn: sqlite3.Connection) -> int:
     """fetch_market_news 的实际实现（调用方须已持有 _fetch_lock）。"""
     inserted = 0
-    fetched_at = datetime.now(_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     for feed in FEEDS:
         url, name = feed["url"], feed["name"]

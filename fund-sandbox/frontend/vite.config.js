@@ -16,7 +16,8 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    // 启动优化：将依赖与页面拆成按需加载的独立 chunk，避免首屏必须整包下载解析完才能渲染：
+    // 启动优化：全部依赖与页面打成一个巨包时，
+    // 首屏必须整包下载解析完才能渲染。拆成按需加载的独立 chunk 后：
     //   ① 首屏只下载「react + 当前页」，echarts / xlsx 等重依赖延后；
     //   ② 各 chunk 文件名带 hash，未变动的部分命中缓存，二次打开更快。
     rollupOptions: {

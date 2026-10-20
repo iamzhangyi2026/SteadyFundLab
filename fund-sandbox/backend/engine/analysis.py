@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from backend.config import get
 from backend.data import fetcher
 from backend.engine import holdings as _holdings
-from backend.engine import calendar as _cal, fund_pool
+from backend.engine import fund_pool
+from backend.engine.calendar import TradeCalendar
 
 # 行业配置抓取较慢（每次调 akshare），按基金缓存到本地文件，24 小时内复用。
 # 注意：不放进 fund_holdings 表——那张表存的是个股持仓，与行业配置字段不同。
@@ -66,11 +67,11 @@ def build_boards_payload(
     try:
         # 板块资金流是实时行情，反映最近一个交易日（含今天）：取今天，若今天非交易日则回退到上一交易日。
         # prev_trading_day 从 d-1 起算，故对「今天是否交易日」做判断后取较近者。
-        cal = _cal.TradeCalendar()
-        today = date.today()
+        cal = TradeCalendar()
+        today = datetime.now().date()
         as_of = (today if cal.is_trading_day(today) else cal.prev_trading_day(today)).isoformat()
     except Exception:
-        as_of = date.today().isoformat()
+        as_of = datetime.now().date().isoformat()
     if not boards:
         return {
             "count": 0, "items": [], "source": source, "as_of": as_of,
@@ -159,11 +160,8 @@ def exposure_for(conn, fund_code: str, fund_name: str) -> dict:
 def held_funds(conn) -> list[dict]:
     """当前**真正持有**的基金（lots 有剩余份额的）——持仓穿透的驱动口径。
 
-    历史实现先遍历「交易池」再按份额过滤（`for f in pool_funds(): if shares<=0: continue`），
-    导致两个后果：
-      ① 持仓里有、池里没有的基金，行业暴露里完全不出现；
-      ② 交易池被清空后，明明有持仓，整块却显示「暂无持仓」。
-    持仓是比「关注」更强的信号 —— 穿透必须以持仓为准，与交易池无关。
+    以持仓（lots 剩余份额）为唯一口径，与交易池无关：持仓里有、池里没有的
+    基金也要出现；交易池被清空不影响持仓穿透。
     """
     rows = conn.execute(
         "SELECT DISTINCT l.fund_code AS code, "
@@ -321,6 +319,7 @@ def build_deep_sections(code: str, conn=None, series: list | None = None,
     """
     from . import deep_sections, fees
     from .deep_sections import PS_ZH as _PS_ZH
+    from ..db.schema import get_connection
 
     own = conn is None
     conn = conn or get_connection()
@@ -428,8 +427,8 @@ def build_narrative(boards: dict, exposures: list[dict], intel_items: list[dict]
     - **组合层面**的（持仓总览 / 同涨同跌 / 板块资金流 / 情报库状态）→ 归入 `global`，
       由前端渲染进「组合行业暴露」卡。
 
-    拆分方式：叙述不再单独成卡，而是按关联对象
-    拆分到持仓穿透与行业暴露里，做到「说到哪只基金、就在哪只基金下面」。
+    拆分的依据：逐只基金的提示归入该基金自己的子卡，组合层面的归入组合卡，
+    叙述始终紧跟关联对象渲染。
     """
     per_fund: dict[str, list[str]] = {e["fund_code"]: [] for e in (exposures or [])}
     global_paras: list[str] = []
@@ -508,7 +507,7 @@ def analyze_fund(fund_code: str) -> dict:
     """单只基金的**综合分析**，供 `GET /api/analyze` 与 AI 工具 `analyze_fund` 使用。
 
     内容：净值统计（分位 / 区间收益 / 最大回撤）+ 行业暴露 + 基本信息。
-    ⚠️ **只给事实与指标，不给买卖建议** —— 决策权在接管 agent（项目边界）。
+    ⚠️ **只给事实与指标，不给买卖建议** —— 决策权在 AI（项目边界）。
     """
     from ..db.schema import get_connection
 

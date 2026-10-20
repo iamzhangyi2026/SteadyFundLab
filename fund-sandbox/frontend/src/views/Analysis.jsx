@@ -100,7 +100,7 @@ function FundExposure({ e }) {
         </div>
       ))}
       {/* 人读叙述的「逐只基金」部分：集中度 / 风格漂移提示贴在该基金行业暴露下方，
-          不再单独成一张卡。 */}
+          不再单独成一张卡，叙述拆进关联基金的穿透/暴露里。 */}
       {e.narrative?.length > 0 && (
         <div style={{ marginTop: 10, borderTop: '1px dashed var(--line, #ececec)', paddingTop: 8 }}>
           {e.narrative.map((p, i) => (

@@ -29,6 +29,8 @@ from ..config import get, section
 # 15:00 截单时刻。这是全行业统一的分水岭，不是某个平台的特殊规则
 CUTOFF_TIME = time(15, 0)
 
+# 截单、开市门控等「当前时刻」判定统一按本机时区（datetime.now()）解释。
+
 
 def _redeem_arrival_days(category: str = "") -> int:
     """赎回资金到账延迟天数（交易日）——规则一律来自 config，代码不写死。
@@ -133,8 +135,7 @@ class TradeCalendar:
     def _load_cache(self) -> bool:
         """从本地缓存加载（**带新鲜度检查**）。
 
-        缓存必须**带时效**：`updated_at` 超过 `max_cache_age_days` 天的缓存不再直接采信，转走网络刷新。
-        风险：跨年后旧缓存会把新一年的交易日判错（把今年的交易日当非交易日），且无任何提示。
+        超过 `max_cache_age_days` 天未更新的缓存不再直接采信，转走网络刷新
         （网络也不可用时仍会落到 `weekend_fallback` 降级，并在界面上标 `degraded`）。
         """
         if not self.cache_path.exists():
@@ -333,7 +334,10 @@ class TradeCalendar:
         return self.next_trading_day(nav_date, days)
 
     def is_market_open_now(self, now: datetime | None = None) -> bool:
-        """当前是否处于可下单时段（交易日 15:00 前）。用于开市门控。"""
+        """当前是否处于可下单时段（交易日 15:00 前）。用于开市门控。
+
+        默认取「当前时刻」时按本机时区解释：15:00 截单等规则都按本机时区为准。
+        """
         now = now or datetime.now()
         return self.is_trading_day(now) and now.time() < CUTOFF_TIME
 
@@ -354,7 +358,7 @@ if __name__ == "__main__":
     cal.load()
     print(f"日历来源: {cal.source}  降级: {cal.degraded}  天数: {len(cal._days)}")
 
-    today = date.today()
+    today = datetime.now().date()
     print(f"\n今天 {today} 是否交易日: {cal.is_trading_day(today)}")
     print(f"下一交易日: {cal.next_trading_day(today)}")
     print(f"上一交易日: {cal.prev_trading_day(today)}")

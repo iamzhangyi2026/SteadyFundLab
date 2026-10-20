@@ -17,11 +17,11 @@
     cash     现金分红：分红金额以「dividend」流水入账，计入已实现盈亏
     reinvest 红利再投：按除息后净值把分红折算成份额，生成一个新批次
 
-注意
-----
-历史某日的持有份额无法精确还原（lots 只存当前剩余份额），
-因此处理分红时用**当前持有份额**近似估算分红总额。
-这对于"当前持仓视角"的分红到账是合理的，但不是逐日历史精算。
+份额口径
+--------
+分红金额 = 每份分红 × 除息日实际持有份额。持有份额按已确认订单的成交净值日
+重建（严格早于除息日才计入）：当天买入按除息价成交不拿分红，当天卖出按
+权益登记日规则仍拿分红、不扣。lots 只存当前剩余份额，不能用于历史分红还原。
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from datetime import date, datetime
 
 from backend.config import get
 from backend.engine import ledger, orders
+from backend.engine import money as _m
 
 CASH = "cash"
 REINVEST = "reinvest"
@@ -90,41 +91,67 @@ def detect_dividends(conn: sqlite3.Connection, fund_code: str,
     return events
 
 
-def _held_shares(conn: sqlite3.Connection, fund_code: str) -> float:
-    """当前持有份额（分红金额的分母）。"""
-    row = conn.execute(
+def _shares_as_of(conn: sqlite3.Connection, fund_code: str, ex_date: str) -> float:
+    """除息日实际持有的份额（分红金额的分母）。
+
+    按成交净值日严格早于除息日的已确认订单重建：当天及之后成交不参与本次分红
+    （当天买入按除息价成交不拿分红；当天卖出按权益登记日规则仍拿分红，不扣）。
+    lots 只存当前剩余份额，无法还原历史持仓，故以已确认订单的成交口径累计。
+    Decimal 逐笔累计后量化到 4 位。
+    """
+    bought = _m.ZERO
+    sold = _m.ZERO
+    for r in conn.execute(
         """
-        SELECT COALESCE(SUM(remaining_shares), 0) AS s FROM lots
-        WHERE fund_code=? AND status='active' AND remaining_shares > 0
+        SELECT side, deal_shares FROM orders
+        WHERE fund_code=? AND status='confirmed'
+              AND deal_shares IS NOT NULL AND nav_date < ?
         """,
-        (fund_code,),
-    ).fetchone()
-    return row["s"] if row else 0.0
+        (fund_code, ex_date),
+    ):
+        if r["side"] == "buy":
+            bought += _m.D(r["deal_shares"])
+        else:
+            sold += _m.D(r["deal_shares"])
+    return max(0.0, _m.shares(bought - sold))
 
 
 def _create_dividend_order(conn: sqlite3.Connection, fund_code: str, ex_date: str,
-                           amount: float, nav: float, shares: float) -> int:
-    """为红利再投建一条已确认的订单，供 create_lot 关联（lots.order_id 外键非空）。"""
+                           amount: float, nav: float, shares: float,
+                           commit: bool = True) -> int:
+    """为红利再投建一条已确认的订单，供 create_lot 关联（lots.order_id 外键非空）。
+
+    订单号按「该基金红利再投计数」生成，撞 order_no 唯一约束时重新取号重插
+    （与 submit_order 同策略）——分红批处理不该被一个撞号整体打断。
+    `commit=False` 供调用方把整笔再投包进同一事务。
+    """
     now = datetime.now().isoformat(timespec="seconds")
-    seq = conn.execute(
-        "SELECT COUNT(*)+1 AS c FROM orders WHERE fund_code=? AND reason LIKE '红利再投%'",
-        (fund_code,),
-    ).fetchone()["c"]
-    order_no = f"D{ex_date.replace('-', '')}{seq:03d}"
-    cur = conn.execute(
-        """
-        INSERT INTO orders
-            (order_no, fund_code, side, amount, submit_date, submit_time,
-             nav_date, confirm_date, status, decision_source, reason,
-             fee_purchase, deal_nav, deal_shares, deal_amount, created_at)
-        VALUES (?, ?, 'buy', ?, ?, '00:00:00', ?, ?, 'confirmed', 'rule', ?,
-                0, ?, ?, ?, ?)
-        """,
-        (order_no, fund_code, amount, ex_date, ex_date, ex_date,
-         f"红利再投自动（{ex_date} 除息）", nav, shares, amount, now),
-    )
-    conn.commit()
-    return cur.lastrowid
+    day = ex_date.replace("-", "")
+    for _attempt in range(5):
+        seq = conn.execute(
+            "SELECT COUNT(*)+1 AS c FROM orders WHERE fund_code=? AND reason LIKE '红利再投%'",
+            (fund_code,),
+        ).fetchone()["c"]
+        order_no = f"D{day}{seq:03d}"
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO orders
+                    (order_no, fund_code, side, amount, submit_date, submit_time,
+                     nav_date, confirm_date, status, decision_source, reason,
+                     fee_purchase, deal_nav, deal_shares, deal_amount, created_at)
+                VALUES (?, ?, 'buy', ?, ?, '00:00:00', ?, ?, 'confirmed', 'rule', ?,
+                        0, ?, ?, ?, ?)
+                """,
+                (order_no, fund_code, amount, ex_date, ex_date, ex_date,
+                 f"红利再投自动（{ex_date} 除息）", nav, shares, amount, now),
+            )
+            if commit:
+                conn.commit()
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            continue
+    raise RuntimeError("红利再投订单号生成冲突（order_no 唯一约束），请重试")
 
 
 def process_dividends(conn: sqlite3.Connection, fund_code: str) -> dict:
@@ -143,42 +170,49 @@ def process_dividends(conn: sqlite3.Connection, fund_code: str) -> dict:
             skipped.append({**e, "reason": "该除息日已处理过"})
             continue
 
-        shares = _held_shares(conn, fund_code)
-        amount = e["dividend_per_share"] * shares
+        # 除息日必须是合法 ISO 日期。解析失败说明净值数据损坏——
+        # 不猜"今天"、不落 dividends 行（留待数据修复后重试），仅告警。
+        try:
+            txn_d = date.fromisoformat(e["ex_date"])
+        except ValueError:
+            skipped.append({**e, "reason": f"除息日 {e['ex_date']} 不是合法日期，跳过"})
+            print(f"[dividend] {fund_code} 除息日 {e['ex_date']} 非法，已跳过（不猜日期）")
+            continue
+
+        shares = _shares_as_of(conn, fund_code, e["ex_date"])
+        amount = _m.money(_m.D(e["dividend_per_share"]) * _m.D(shares))
         reinvest = 1 if method == REINVEST else 0
 
-        conn.execute(
-            """
-            INSERT INTO dividends
-                (fund_code, ex_date, dividend_per_share, nav_before, nav_after,
-                 reinvest, source, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (fund_code, e["ex_date"], e["dividend_per_share"], e["nav_before"],
-             e["nav_after"], reinvest, "nav_daily_detect",
-             datetime.now().isoformat(timespec="seconds")),
-        )
-
-        if amount > 0 and reinvest:
-            # 红利再投：按除息后净值折算份额，新建批次（成本记为分红金额）
-            nav = e["nav_after"] or e["nav_before"] or 0.0
-            new_shares = amount / nav if nav > 0 else 0.0
-            if new_shares > 0:
-                oid = _create_dividend_order(conn, fund_code, e["ex_date"], amount,
-                                             nav, new_shares)
-                ledger.create_lot(conn, fund_code, oid, e["ex_date"], new_shares,
-                                  nav, amount)
-        elif amount > 0:
-            # 现金分红：分红到账入账
-            try:
-                txn_d = date.fromisoformat(e["ex_date"])
-            except ValueError:
-                txn_d = None
-            orders.append_ledger(
-                conn, "dividend", amount,
-                note=f"{fund_code} {e['ex_date']} 现金分红到账", txn_date=txn_d,
+        # 单事务：dividends 行 + 再投订单/批次 + 现金流水要么全落、要么全滚——
+        # 分多笔 commit 时中间崩溃会留下"有分红记录无批次/无流水"的半成品。
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO dividends
+                    (fund_code, ex_date, dividend_per_share, nav_before, nav_after,
+                     reinvest, source, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (fund_code, e["ex_date"], e["dividend_per_share"], e["nav_before"],
+                 e["nav_after"], reinvest, "nav_daily_detect",
+                 datetime.now().isoformat(timespec="seconds")),
             )
-        conn.commit()
+
+            if amount > 0 and reinvest:
+                # 红利再投：按除息后净值折算份额，新建批次（成本记为分红金额）
+                nav = e["nav_after"] or e["nav_before"] or 0.0
+                new_shares = _m.shares(_m.div(amount, nav))
+                if new_shares > 0:
+                    oid = _create_dividend_order(conn, fund_code, e["ex_date"], amount,
+                                                 nav, new_shares, commit=False)
+                    ledger.create_lot(conn, fund_code, oid, e["ex_date"], new_shares,
+                                      nav, amount, commit=False)
+            elif amount > 0:
+                # 现金分红：分红到账入账
+                orders.append_ledger(
+                    conn, "dividend", amount,
+                    note=f"{fund_code} {e['ex_date']} 现金分红到账", txn_date=txn_d,
+                )
         applied.append({**e, "shares": round(shares, 2),
                         "amount": round(amount, 2), "method": method})
 
@@ -199,7 +233,7 @@ def list_dividends(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-# main.py 路由 /api/dividends 调用 get_dividends；旧引擎命名为 list_dividends
+# main.py 路由 /api/dividends 调用 get_dividends
 get_dividends = list_dividends
 
 

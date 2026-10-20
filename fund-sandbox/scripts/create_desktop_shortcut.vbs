@@ -7,19 +7,18 @@
 
 Option Explicit
 
-Dim ws, shortcut, desktop, target
+Dim ws, shortcut, desktop, target, fso, root
 
 Set ws = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
 desktop = ws.SpecialFolders("Desktop")
-
-' 相对路径：本脚本位于 fund-sandbox/scripts/，run.bat 在上一级目录
-scriptDir = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\") - 1)
-parentDir = Left(scriptDir, InStrRev(scriptDir, "\") - 1)
-target   = parentDir & "\run.bat"
+' 脚本位于 <项目根>\scripts 下，向上两级即项目根，避免写死绝对路径
+root = fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName))
+target = root & "\run.bat"
 
 Set shortcut = ws.CreateShortcut(desktop & "\fund-sandbox.lnk")
 shortcut.TargetPath = target
-shortcut.WorkingDirectory = parentDir
+shortcut.WorkingDirectory = root
 shortcut.Description = "fund-sandbox 基金模拟交易沙盒"
 shortcut.Save
 

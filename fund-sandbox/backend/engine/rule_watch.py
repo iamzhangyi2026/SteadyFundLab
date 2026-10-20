@@ -106,13 +106,12 @@ def sync_fund_fees(conn, codes, force: bool = False, ttl_days: int = FEE_TTL_DAY
 
     变化检测：新抓到的档位与库里旧值不一致 → 写一条 rule_change_log(kind='redeem_fee')。
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
     import json
     import re
 
-    tz = timezone(timedelta(hours=8))
     stat = {"fetched": 0, "ok": 0, "changed": 0, "failed": 0}
-    cutoff = (datetime.now(tz) - timedelta(days=ttl_days)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff = (datetime.now() - timedelta(days=ttl_days)).strftime("%Y-%m-%d %H:%M:%S")
 
     for code in dict.fromkeys(str(c).strip() for c in codes if str(c).strip()):
         old = conn.execute("SELECT redeem_tiers, fetched_at FROM fund_fee WHERE fund_code = ?", (code,)).fetchone()

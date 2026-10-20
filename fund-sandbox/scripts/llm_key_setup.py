@@ -1,6 +1,8 @@
 """
 fund-sandbox LLM Key 配置脚本
 
+> 用途：交互式配置 LLM API Key 并写入加密存储。
+
 用法：
     runtime\python\python.exe scripts\llm_key_setup.py
 

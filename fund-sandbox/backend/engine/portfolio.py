@@ -24,6 +24,10 @@ import sqlite3
 from datetime import date, datetime
 
 from backend.engine import orders
+from backend.engine import budget
+from backend.engine import money as _m
+
+# 快照日期按本机时区记，与下单 / 订单号同一口径
 
 
 def _portfolio_state(conn: sqlite3.Connection) -> dict:
@@ -39,37 +43,41 @@ def _portfolio_state(conn: sqlite3.Connection) -> dict:
         """
     ).fetchall()
 
-    mv = 0.0
-    cost = 0.0
+    # 市值 / 成本按 Decimal 逐批计算（口径与 budget.used_in_positions、
+    # ledger.position_summary、holdings.get_positions 一致：成本按原始份额折算），
+    # 最后量化落地。float 链路在批次多、金额碎时会累积可见误差。
+    mv = _m.ZERO
+    cost = _m.ZERO
     for r in rows:
-        nav = r["nav"] or 0.0
-        mv += r["remaining_shares"] * nav
-        if r["shares"]:
-            # 成本按剩余比例摊（部分赎回后成本同步减少）
-            cost += r["cost_amount"] * (r["remaining_shares"] / r["shares"])
+        nav_d = _m.D(r["nav"])
+        if nav_d > 0:
+            mv += _m.q_money(_m.D(r["remaining_shares"]) * nav_d)
+        orig = _m.D(r["shares"])
+        if orig > 0:
+            cost += _m.q_money(
+                _m.D(r["cost_amount"]) * _m.D(r["remaining_shares"]) / orig
+            )
 
     cash = orders.get_cash_balance(conn)
-    realized = 0.0
-    try:
-        from backend.engine import budget
-        realized = budget.realized_pnl(conn)
-    except Exception:
-        realized = 0.0
+    # 已实现盈亏由 budget 模块算（单一来源）；此处不吞异常——
+    # 静默记 0 会把「算错」伪装成「没赚」，快照曲线整体失真。
+    realized = budget.realized_pnl(conn)
 
     return {
-        "market_value": round(mv, 2),
-        "total_cost": round(cost, 2),
+        "market_value": float(_m.q_money(mv)),
+        "total_cost": float(_m.q_money(cost)),
         "cash": round(cash, 2),
-        "total_assets": round(mv + cash, 2),
-        "unrealized_pnl": round(mv - cost, 2),
+        "total_assets": round(float(_m.q_money(mv)) + cash, 2),
+        "unrealized_pnl": float(_m.q_money(mv - cost)),
         "realized_pnl": round(realized, 2),
-        "cumulative_pnl": round(mv - cost + realized, 2),
+        "cumulative_pnl": float(_m.q_money(mv - cost + _m.D(realized))),
     }
 
 
 def take_snapshot(conn: sqlite3.Connection, snap_date: date | None = None) -> dict:
     """记录当日组合快照。同一天重复调用会覆盖，不产生重复行。"""
-    d = (snap_date or date.today()).isoformat()
+    # 默认日期按本机时区取，与下单 / 订单号同一口径
+    d = (snap_date or datetime.now().date()).isoformat()
     s = _portfolio_state(conn)
     now = datetime.now().isoformat(timespec="seconds")
     conn.execute(
@@ -200,7 +208,9 @@ def time_weighted_return(conn: sqlite3.Connection, fund_code: str,
     twr = (v1 / v0 - 1) * 100
     days = (date.fromisoformat(d1) - date.fromisoformat(d0)).days
     annualized = None
-    if days > 0:
+    # 年化要求起止净值均为正：净值非正（脏数据 / 停牌异常）时幂运算会出
+    # 复数或除零错误，此时宁缺毋滥——TWR 本身仍可读。
+    if days > 0 and v0 > 0 and v1 > 0:
         years = days / 365.0
         annualized = ((v1 / v0) ** (1 / years) - 1) * 100
 
@@ -216,13 +226,13 @@ def time_weighted_return(conn: sqlite3.Connection, fund_code: str,
 
 
 # ---------------------------------------------------------------------------
-# 与 main.py 路由契约对齐的别名 / 公开封装（兼容旧引擎命名）
+# 与 main.py 路由契约对齐的别名 / 公开封装
 # ---------------------------------------------------------------------------
 
-# 旧引擎里组合曲线函数名为 curve；main.py 路由 /api/portfolio/curve 调用 get_portfolio_curve
+# main.py 路由 /api/portfolio/curve 调用 get_portfolio_curve
 get_portfolio_curve = curve
 
-# 旧引擎里快照函数为 take_snapshot；main.py 路由 /api/portfolio/snapshot 调用 snapshot_portfolio
+# main.py 路由 /api/portfolio/snapshot 调用 snapshot_portfolio
 snapshot_portfolio = take_snapshot
 
 

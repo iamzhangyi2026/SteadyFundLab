@@ -1,6 +1,6 @@
 {
   "name": "fund-sandbox",
-  "version": "1.0.1",
+  "version": "1.0.0",
   "description": "基金模拟交易沙盒桌面端：Electron 原生窗口壳 + Python(FastAPI) 后端",
   "main": "main.js",
   "private": true,
@@ -27,11 +27,21 @@
     "extraResources": [
       {
         "from": "../backend",
-        "to": "backend",
+        "to": "backend"
+      },
+      {
+        "from": "../data",
+        "to": "data",
         "filter": [
           "**/*",
-          "!**/__pycache__/**",
-          "!**/*.pyc"
+          "!**/llm_config.json",
+          "!**/llm_pool.json",
+          "!**/ai_profile.json",
+          "!**/ai_chat.jsonl",
+          "!**/llm_calls.jsonl",
+          "!**/heartbeat.json",
+          "!**/backup_prereset_*.db",
+          "!**/tmp_restore_test.db"
         ]
       },
       {
@@ -49,15 +59,18 @@
     ],
     "win": {
       "target": [
+        "portable",
         "nsis"
       ],
       "icon": null
     },
+    "portable": {
+      "artifactName": "fund-sandbox-portable.exe"
+    },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "artifactName": "fund-sandbox-Setup-${version}.exe"
+      "allowToChangeInstallationDirectory": true
     }
   }
 }

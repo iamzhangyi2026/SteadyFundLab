@@ -40,7 +40,7 @@ export default function News() {
 
   return (
     <div className="stack">
-      {/* 头条占满整行，避免标题折行 */}
+      {/* 头条是本页最该先看到的东西，占满整行，避免挤在半栏导致标题折行 */}
       <NewsRotator className="wide" items={rotatorItems} onOpen={openLink} />
       {/* 「财经资讯」卡片已移除：与总览「市场最新动态」同源（/api/market-news），
           避免同一份资讯在两处重复展示。 */}
@@ -63,7 +63,7 @@ export default function News() {
               <h4>{it.title}</h4>
               {it.summary && <p>{it.summary}</p>}
               <div className="meta" style={{ marginTop: 4 }}>
-                {/* 公告/重仓股是内容分类而非涨跌，故用中性色，避免被误读为涨/跌 */}
+                {/* 公告/重仓股是内容分类，不是涨跌，所以不用绿色，避免被当成「跌」 */}
                 <span className={`tag ${it.kind === 'fund_announce' ? 'info' : 'neutral'}`}>
                   {it.kind === 'fund_announce' ? '基金公告' : '重仓股'}
                 </span>

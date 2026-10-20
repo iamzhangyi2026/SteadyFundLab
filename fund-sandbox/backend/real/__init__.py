@@ -7,7 +7,7 @@
 - A 区的 scheduler / orders / ledger / rules 不得 import 本包
 
 权限：人读写；AI 只读。
-边界定义见 docs/项目/权限边界-人机隔离.md。
+边界定义：账本隔离、数据共用。
 """
 
 from backend.real.db import DB_PATH, get_connection, get_db_path, init_db

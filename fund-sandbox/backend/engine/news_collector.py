@@ -3,10 +3,11 @@
 
 背景
 ----
-`news_feed`（资讯页「基金公告 / 重仓股」的数据源）缺少写入方时，数据会停留在历史日期。
-本模块负责恢复抓取，**旧数据一律保留**（后续还要用于总结分析）。
+`news_feed`（资讯页「基金公告 / 重仓股」的数据源）的**写入方缺失**，
+表停留在较早日期，那一栏成了陈旧数据。恢复时明确：
+**旧数据一律保留**（后续还要用于总结分析）。
 
-口径：抓取范围按持仓而非关注列表
+口径：持仓比「关注」重要
 ------------------------------------
   - 抓取范围 = **真实持仓基金**（lots 有剩余份额的）+ 其前十大重仓股，
     与「交易池/关注列表」无关 —— /api/news 本来也只按持仓过滤。
@@ -30,8 +31,7 @@ STOCK_NEWS_LIMIT = 10
 # 新闻正文入库截断长度（长文塞库没意义，标题+摘要已够阅读）
 CONTENT_MAX = 400
 # 基金公告（人事/分红）东财接口不返原文链接，给一个可点开的公告列表页，
-# 否则资讯页「基金公告」永远没有「阅读全文」按钮（该 URL 返回 HTTP 200
-# 且页面含「公告」）。
+# 否则资讯页「基金公告」永远没有「阅读全文」按钮。
 FUND_ANNOUNCE_URL = "https://fundf10.eastmoney.com/jjgg_{code}.html"
 
 
@@ -95,8 +95,9 @@ def holding_stocks(conn: sqlite3.Connection, fund_code: str) -> List[Dict[str, A
     if out:
         return out
 
-    from datetime import date
-    today = date.today()
+    from datetime import datetime
+
+    today = datetime.now().date()
     ends = []
     for y in (today.year, today.year - 1):
         ends.append(f"{y}0630")

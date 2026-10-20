@@ -10,9 +10,8 @@ import Modal from './Modal'
 // ⚠️ 为什么必须自建、不能用 `window.prompt`：
 //   Electron **不支持** `prompt()` —— 调用会直接抛
 //   `Error: prompt() is and will not be supported.`
-//   （Electron 31 + `webPreferences: { sandbox: true }`，与主窗口配置一致）。
-//   若调用处没有 try/catch，整个处理函数会**静默中断**、界面毫无反应。
-//   本项目约定自建弹窗（ConfirmDialog 替代 window.confirm），
+//   （Electron 31 + `webPreferences: { sandbox: true }` 即如此）。
+//   若调用处没有 try/catch，整个处理函数会**静默中断**、界面毫无反应 ——
 //   本组件与 ConfirmDialog 对称：同样复用 Modal、同样自带 loading 与失败重试。
 export default function PromptDialog({
   open,

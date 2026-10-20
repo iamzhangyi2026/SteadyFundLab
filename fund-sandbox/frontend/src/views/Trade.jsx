@@ -98,10 +98,9 @@ export default function Trade() {
 
   // 人工添加：直接加入候选池并抓取历史净值，**不询问理由**
   // （后端按 `decision_source` 区分——human 不强制 reason，ai / 程序化必须填）。
-  // **Electron 不支持 `prompt()`**（调用即抛
-  // `Error: prompt() is and will not be supported.`），
-  // 因此**任何原生弹窗都不要再用**，统一走自建组件（ConfirmDialog / PromptDialog 等）：
-  // 原生调用无人捕获异常时，界面会静默无反应。
+  // ⚠️ Electron 不支持 `window.prompt`（调用即抛 `Error: prompt() is and will not be
+  // supported.`），且 onClick 无人捕获异常时会静默失败。**不要用原生弹窗**，
+  // 统一走自建组件（ConfirmDialog / PromptDialog 等）。
   const onAddFund = async (code) => {
     setSMsg({ t: 'info', text: `正在添加 ${code} 并抓取历史净值…` })
     try {
@@ -510,7 +509,7 @@ export default function Trade() {
         onConfirm={confirmDeleteFund}
         onClose={() => setDelConfirm(null)}
       />
-      {/* 注：「添加理由」由 decision_source 决定：人工直接加，AI / 程序化必填。
+      {/* 注：「添加理由」不再询问人工：人工直接加，AI 才必须填理由。
           通用输入弹窗见 components/PromptDialog.jsx（替代 Electron 不支持的 window.prompt）。 */}
 
       {/* 基金「详细资讯」弹窗：点击交易页里的基金（**搜索结果**或**交易池**）即弹出。

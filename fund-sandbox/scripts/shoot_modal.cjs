@@ -26,6 +26,14 @@ const isWin = process.platform === 'win32';
 function findChrome() {
   const p = arg('chrome', '');
   if (p && fs.existsSync(p)) return p;
+  const base = process.env.CHROME_DIR || path.join(os.homedir(), '.cache', 'chrome-headless');
+  if (fs.existsSync(base)) {
+    const vers = fs.readdirSync(base).filter((d) => d.startsWith('chrome-')).sort().reverse();
+    for (const v of vers) {
+      const c = path.join(base, v, 'chrome.exe');
+      if (fs.existsSync(c)) return c;
+    }
+  }
   for (const c of ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'])
     if (fs.existsSync(c)) return c;
   return null;

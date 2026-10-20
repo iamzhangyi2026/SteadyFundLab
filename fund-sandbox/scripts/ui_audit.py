@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-r"""No-browser UI smoke: uses stdlib only (urllib + re + json + pathlib)
+r"""No-browser UI smoke: since this environment cannot run a Chromium daemon
+(browser daemons may be terminated here), use stdlib only (urllib + re + json + pathlib)
 to assert: (1) served HTML bundle matches dist/assets, (2) bundle contains
 key UI strings, (3) all main API endpoints return 200.
 

@@ -311,7 +311,7 @@ export default function RealPositions() {
               value={text}
               onChange={(e) => setText(e.target.value)}
               rows={4}
-              placeholder={'或直接粘贴文本，每行一只基金，含 6 位代码与金额，例如：\n易方达蓝筹精选混合 005827 份额 5000 市值 12345.67 成本 12000'}
+              placeholder={'或直接粘贴文本，每行一只基金，含 6 位代码与金额，例如：\n华安创新混合 040001 份额 5000 市值 12345.67 成本 12000'}
               style={{ width: '100%', fontFamily: 'monospace', fontSize: 13 }}
             />
           </div>

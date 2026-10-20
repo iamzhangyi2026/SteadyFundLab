@@ -7,8 +7,8 @@ flash_news —— 闪电 / 快讯新闻。
 - `get_flash_news(conn, limit)`：从 `market_news` 读最近新闻（按 pub_time 倒序）。
 
 **为什么快讯单独一路（不走 RSS）**：这三家官网**无可用 RSS**
-（财联社 / 证券时报 / 上证报的 RSS 路径返回 404），但 akshare 有现成快讯接口，全部可用
-（详见 `docs/项目/资讯源补充清单.md`）。快讯桶与 RSS 桶并列，二者都落 `market_news`，
+（财联社 / 证券时报 / 上证报的 RSS 路径 404），但 akshare 有现成快讯接口 —— 均可使用
+（详见资讯源补充清单）。快讯桶与 RSS 桶并列，二者都落 `market_news`，
 下游（事件提取 / 信息时差 / 主题热度）统一消费。
 
 fetch_flash_news 负责抓取快讯并写入 market_news；覆盖 stock_info_global_* 等源。

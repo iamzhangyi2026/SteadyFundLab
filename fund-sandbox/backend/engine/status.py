@@ -29,11 +29,15 @@ from datetime import date, datetime, timedelta
 from backend.config import get
 from backend.data import fetcher
 
+# 快照日期、QDII 日历判断统一按本机时区——与下单、订单号同一口径。
+def _today() -> date:
+    return datetime.now().date()
+
 # 下单路径的「交易状态」抓取硬超时（秒）。
 # 交易状态来自全市场每日净值大表（ak.fund_open_fund_daily_em：一次返回约 2.4 万只、
 # 实拉约 28s）。应用启动后会后台预热、运行期每 9 分钟续热，正常下单直接命中热缓存、
-# 秒回不阻塞；此超时仅作冷启动/续热间隙兜底——必须 > 真实拉取耗时(~28s)，否则会在
-# 5s 处超时返回空 → 库内又无历史快照 → 拒单。超时阈值需设为 60.0。
+# 秒回不阻塞；此超时仅作冷启动/续热间隙兜底——必须大于真实拉取耗时（约 28s），
+# 否则超时返回空、库内又无历史快照时会直接拒单。
 # 可在 config.toml 的 [data_quality] order_status_timeout 调。
 _ORDER_STATUS_TIMEOUT = float(get("data_quality", "order_status_timeout", 60.0))
 
@@ -128,7 +132,7 @@ def hk_market_holidays(year: int) -> set[date]:
 
 
 def is_overseas_holiday(d: date, market: str = "us") -> bool:
-    """某日是否为境外市场休市日。market: us | hk"""
+    """某日是否为境外市场休市日。market: us | hk；其余取值视为非休市日。"""
     if market == "us":
         return d in us_market_holidays(d.year)
     if market == "hk":
@@ -137,7 +141,12 @@ def is_overseas_holiday(d: date, market: str = "us") -> bool:
 
 
 def next_overseas_holiday(d: date, market: str = "us") -> date | None:
-    """返回 d 之后最近的境外休市日。用于提前提示 QDII 将暂停交易。"""
+    """返回 d 之后最近的境外休市日。用于提前提示 QDII 将暂停交易。
+
+    market 只认 us / hk；其余取值（含 None）没有可查的假日表，返回 None。
+    """
+    if market not in ("us", "hk"):
+        return None
     hs = (
         us_market_holidays(d.year) | us_market_holidays(d.year + 1)
         if market == "us"
@@ -244,23 +253,35 @@ def can_buy(st: dict, amount: float,
         # 优先用接口解析出的金额，解析不到再退回人工维护值。
         # 两者都没有才拒绝 —— 限购是真实约束，不能当它不存在，
         # 但也不能因为拿不到数字就完全无法交易。
-        limit = st["purchase_limit"] or fallback_limit
+        # 注意用 is None 判断而非 or：接口解析出的 0（限购 0 元）是有效值，
+        # 不能被 or 当成「没解析到」而误用人工兜底值。
+        limit = st["purchase_limit"]
+        if limit is None:
+            limit = fallback_limit
         if limit is None:
             return False, (
                 f"该基金限购，但接口未给出金额且未配置人工限额（{st['raw_purchase']}）。"
                 f"请在 config.toml 的 [[funds]] 中填写 purchase_limit "
                 f"（从支付宝基金页面核对实际公示），否则拒绝下单"
             )
+        if limit <= 0:
+            # 限额为 0 或负数 = 实际不可申购（数据异常或已停止受理）。
+            # 不能因为 amount > limit 恰好成立就复用后面的金额比较话术，
+            # 这里给出准确理由。
+            return False, (
+                f"该基金限购额为 {limit}（非正数，实际不可申购或数据异常），不能买入"
+            )
         if amount > limit:
             return False, f"申购金额 {amount:.2f} 元超过单日限额 {limit:.0f} 元"
     return True, "ok"
 
 
-def can_sell(st: dict, lot_confirm_date: date | None, as_of: date) -> tuple[bool, str]:
-    """能否卖出。
+def can_sell(st: dict) -> tuple[bool, str]:
+    """基金级赎回状态门禁：暂停赎回 / 封闭期 / 状态未知一律拒绝。
 
-    持有期基金：每笔份额自确认日起锁定持有期满才能赎回，
-    所以要按批次判断，不能只看基金级别的状态。
+    按批次的**最短持有期锁定不在这里判**——本函数拿不到批次数据，
+    由 `orders.check_before_submit`（提交时）与 `orders._confirm_core`
+    （确认时）按 FIFO 预览逐批校验（hold_period_days + 批次确认日）。
     """
     if st["redeem"] == "closed":
         return False, f"该基金当前暂停赎回或处于封闭期（{st['raw_redeem']}），不能卖出"
@@ -276,8 +297,11 @@ def check_qdii_calendar(fund_code: str, is_qdii: bool, d: date,
     与限购/暂停申购是**不同维度**的问题：
     这里是境外市场休市导致的交易日历暂停，日历性、可预期，
     应提前提示而不是等到下单失败。
+    market 只认 us / hk，其余取值（含 None）视为不适用。
     """
     if not is_qdii:
+        return {"applicable": False, "halted": False}
+    if market not in ("us", "hk"):
         return {"applicable": False, "halted": False}
     halted = is_overseas_holiday(d, market)
     nxt = next_overseas_holiday(d, market)
@@ -314,6 +338,14 @@ def _status_from_row(row, is_qdii: bool, market: str) -> dict:
     raw_redeem = _extract_raw_from_note(note, "赎回") or ""
     purchase = row.get("purchase_status") or "unknown"
     redeem = row.get("redeem_status") or "unknown"
+    # QDII 日历按**快照日期**判断（而不是今天）：缓存快照回答的是
+    # 「status_date 那天海外是否休市」，与 purchase/redeem 同一天的口径；
+    # status_date 缺失才退今天。market 归一化，None/未知值按不适用处理。
+    snap = row.get("status_date")
+    try:
+        snap_d = date.fromisoformat(str(snap)[:10]) if snap else _today()
+    except ValueError:
+        snap_d = _today()
     return {
         "purchase": purchase,
         "redeem": redeem,
@@ -321,7 +353,8 @@ def _status_from_row(row, is_qdii: bool, market: str) -> dict:
         "limit_unknown": purchase == "limited" and row.get("purchase_limit") is None,
         "raw_purchase": raw_purchase,
         "raw_redeem": raw_redeem,
-        "qdii": check_qdii_calendar(row.get("fund_code", ""), is_qdii, date.today(), market),
+        "qdii": check_qdii_calendar(row.get("fund_code", ""), is_qdii, snap_d,
+                                    market or "us"),
         "from_cache": True,
     }
 
@@ -344,7 +377,8 @@ def fetch_and_save(conn: sqlite3.Connection, fund_code: str, is_qdii: bool = Fal
 
     抓不到时的降级策略（关键，避免「下单没反应」）：
         1) 今天已经有快照 → 直接复用，绝不碰网络（下单路径因此永远秒回）；
-        2) 实时抓取失败/超时 → 退而用任意历史快照，标注 from_cache，
+        2) 实时抓取失败/超时 → 退而用够新的历史快照（天数上限见
+           _MAX_SNAPSHOT_AGE_DAYS），标注 from_cache，
            让「源站抖动」不至于把一笔本来能做的交易硬拒掉；
         3) 连历史快照都没有（全新基金、从未抓过）→ 才返回 None，
            由调用方拒绝下单（拿不到就不猜，但这是真正的未知，不是网络抖动）。
@@ -352,7 +386,7 @@ def fetch_and_save(conn: sqlite3.Connection, fund_code: str, is_qdii: bool = Fal
     timeout：实时抓取硬超时（秒）。传 None 用 _ORDER_STATUS_TIMEOUT（默认 60s）。
     网络不可达时这个时间到了就立刻走降级，不再让同步下单请求干等全局 25s。
     """
-    today = date.today().isoformat()
+    today = _today().isoformat()
 
     # 0) 优先用今天已有的快照——下单是高频同步操作，不应为它再拉一次全市场表
     cached_today = conn.execute(
@@ -372,7 +406,7 @@ def fetch_and_save(conn: sqlite3.Connection, fund_code: str, is_qdii: bool = Fal
         raw = None
     if raw:
         st = parse_status(raw.get("purchase_status", ""), raw.get("redeem_status", ""))
-        qd = check_qdii_calendar(fund_code, is_qdii, date.today(), market)
+        qd = check_qdii_calendar(fund_code, is_qdii, _today(), market)
         now = datetime.now().isoformat(timespec="seconds")
         conn.execute(
             """
@@ -398,11 +432,10 @@ def fetch_and_save(conn: sqlite3.Connection, fund_code: str, is_qdii: bool = Fal
         return {**st, **raw, "qdii": qd}
 
     # 2) 实时没抓到（网络抖动/被限流）——退而用历史快照，**但必须够新**。
-    #    历史快照必须带时效下限：申购状态随时可变，
-    #    用过期快照判断会误拒或误放行。故设时效上限，
+    #    申购状态随时可变，用过期快照判断会误拒或误放行。故设时效上限，
     #    超过 `_MAX_SNAPSHOT_AGE_DAYS` 天即视为不可信 → 宁可返回 None 让调用方拒绝
     #    （「拿不到就不猜」），也不拿过期数据替用户做交易决定。
-    cutoff = (date.today() - timedelta(days=_MAX_SNAPSHOT_AGE_DAYS)).isoformat()
+    cutoff = (_today() - timedelta(days=_MAX_SNAPSHOT_AGE_DAYS)).isoformat()
     cached_any = conn.execute(
         "SELECT * FROM fund_status WHERE fund_code = ? AND status_date >= ? "
         "ORDER BY status_date DESC, id DESC LIMIT 1",
@@ -464,12 +497,12 @@ if __name__ == "__main__":
     print("\n" + "=" * 78)
     print("境外市场节假日（按公历规则计算，非编造）")
     print("=" * 78)
-    y = date.today().year
+    y = _today().year
     print(f"\n  美股 {y} 年休市日（前 10 个）：")
     for d in sorted(us_market_holidays(y))[:10]:
         print(f"    {d}  {['周一','周二','周三','周四','周五','周六','周日'][d.weekday()]}")
-    nxt = next_overseas_holiday(date.today(), "us")
-    print(f"\n  下一个美股休市日：{nxt}（{(nxt - date.today()).days} 天后）")
+    nxt = next_overseas_holiday(_today(), "us")
+    print(f"\n  下一个美股休市日：{nxt}（{(nxt - _today()).days} 天后）")
     print("  港股仅覆盖公历固定节日，农历节日（春节/清明/端午/中秋）未实现 —— 宁可漏报不谎报")
 
     conn.close()

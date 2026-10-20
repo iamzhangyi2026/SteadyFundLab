@@ -11,6 +11,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       shell.openExternal(url).catch((err) => console.error('[preload] openExternal failed:', err));
     }
   },
+  // 在**应用内**轻量浏览器窗口打开外链（资讯「阅读全文」）。
+  // 主进程用独立 BrowserWindow 承载 Chromium 渲染，X-Frame-Options 拦不住它；
+  // 返回 Promise<boolean>：false 表示协议不合法（非 http/https）被主进程拒了。
+  openInAppBrowser(url) {
+    if (!url || !/^https?:\/\//i.test(String(url))) {
+      return Promise.resolve(false);
+    }
+    return ipcRenderer.invoke('app:open-inapp', String(url))
+      .catch((err) => { console.error('[preload] openInAppBrowser failed:', err); return false; });
+  },
   // 请求主进程 relaunch：重新加载最新的 main.js / preload.js / 后端代码。
   // 前端「刷新」按钮在 Electron 下调用它，实现「点一下 = 完整重启应用」。
   relaunchApp() {

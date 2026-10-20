@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -18,6 +20,27 @@ DEFAULT_HEARTBEAT = (
 DEFAULT_EMERGENCY = (
     Path(__file__).resolve().parents[2] / "data" / "emergency_stop.json"
 )
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """JSON 原子写：先写同目录临时文件再 os.replace。
+
+    直接 write_text 在进程被 kill / 断电时会留下半截 JSON，读取端
+    （心跳在线判定、紧急停止标记）解析失败——紧急停止尤其致命：
+    标记读不出会按「已暂停」处理或误判，安全状态不能交给写入时序。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False, indent=2))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _heartbeat_path() -> Path:
@@ -63,13 +86,12 @@ def set_emergency_stop(on: bool, note: str = "") -> dict:
     on=False 恢复预先设定的自动操作；交易决策仍由接管 AI 负责。
     """
     path = _emergency_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "stop": bool(on),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
         "note": note,
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_json(path, payload)
     return payload
 
 
@@ -85,13 +107,12 @@ def touch_heartbeat(source: str = "ai", note: str = "") -> dict:
         scheduler 调度器自身的例行巡检（不计为 AI 活跃）
     """
     path = _heartbeat_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "last_seen": datetime.now().isoformat(timespec="seconds"),
         "source": source,
         "note": note,
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_json(path, payload)
     return payload
 
 
@@ -133,7 +154,7 @@ def decision_source() -> str:
 
 
 def current_mode() -> str:
-    """兼容旧调用方；运行中已不存在可切换的决策模式。"""
+    """返回当前决策归属；运行中无可切换的决策模式。"""
     return decision_source()
 
 
@@ -153,7 +174,7 @@ def status() -> dict:
 
     return {
         "decision_source": source,
-        # 兼容尚未迁移的调用方；此字段不再随心跳切换。
+        # 与 decision_source 一致，不随心跳切换。
         "effective_mode": source,
         "ai_online": is_ai_online(),
         "heartbeat_timeout_hours": timeout,

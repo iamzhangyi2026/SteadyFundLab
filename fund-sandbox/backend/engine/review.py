@@ -30,14 +30,18 @@ def get_portfolio_summary(conn: Optional[sqlite3.Connection] = None) -> dict[str
         raw_positions = get_positions(conn)
         positions = []
         for p in raw_positions:
+            cost_amount = float(p.get("cost") or 0)
+            market_value = float(p.get("current_value") or 0)
+            profit = round(market_value - cost_amount, 2)
+            profit_pct = round(profit / cost_amount * 100, 2) if cost_amount > 0 else 0.0
             positions.append({
                 "fund_code": p.get("code"),
-                "fund_name": p.get("name"),
-                "shares": p.get("remaining_shares"),
-                "cost_amount": p.get("cost"),
-                "market_value": p.get("current_value"),
-                "profit": p.get("pnl"),
-                "profit_pct": p.get("pnl_pct"),
+                "fund_name": p.get("fund_name"),
+                "shares": p.get("shares"),
+                "cost_amount": cost_amount,
+                "market_value": market_value,
+                "profit": profit,
+                "profit_pct": profit_pct,
             })
 
         return {
@@ -61,7 +65,8 @@ def get_performance_history(
     if own:
         conn = get_connection()
     try:
-        start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        start_date = (datetime.now()
+                      - timedelta(days=days)).strftime("%Y-%m-%d")
         rows = conn.execute(
             """SELECT snap_date, market_value, unrealized_pnl, total_cost
                FROM portfolio_daily
@@ -74,7 +79,8 @@ def get_performance_history(
         for r in rows:
             mv = r["market_value"] or 0
             profit = r["unrealized_pnl"] or 0
-            profit_pct = (profit / mv * 100) if mv > 0 else 0
+            total_cost = r["total_cost"] or 0
+            profit_pct = (profit / total_cost * 100) if total_cost > 0 else 0
             history.append({
                 "date": r["snap_date"],
                 "market_value": mv,
@@ -109,10 +115,14 @@ def generate_review_report(
         else:
             period_return = 0
 
-        cash = portfolio.get("cash") or 0
-        mv = portfolio.get("market_value") or 0
-        base = cash + mv
-        total_return = (mv / base * 100 - 100) if base > 0 else 0
+        total_assets = portfolio.get("total_assets") or 0
+        # 总收益率以「累计净投入」为基准：初始资金 + 历史累积新增 + 沙盒测试资金
+        # （cash_ledger 入金类流水，本系统无出金/提现流水，赎回所得留在现金里计入总资产）。
+        budget = get_budget(conn)
+        net_invested = (float(budget.get("initial") or 0)
+                        + float(budget.get("cumulative_added") or 0)
+                        + float(budget.get("test_capital") or 0))
+        total_return = ((total_assets - net_invested) / net_invested * 100) if net_invested > 0 else 0.0
 
         return {
             "period": period,
@@ -147,10 +157,7 @@ DEFAULT_TOP_N = 8
 
 def _event_series(conn, days: int = DEFAULT_DAYS, top_n: int = DEFAULT_TOP_N) -> list[dict]:
     """近 days 天里，按**事件数**排前的主题（来自 news_triage.impact_boards）。"""
-    from datetime import datetime, timedelta, timezone
-
-    tz = timezone(timedelta(hours=8))
-    since = (datetime.now(tz) - timedelta(days=days)).strftime("%Y-%m-%d")
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     rows = conn.execute(
         """
         SELECT impact_boards,
@@ -170,7 +177,12 @@ def _event_series(conn, days: int = DEFAULT_DAYS, top_n: int = DEFAULT_TOP_N) ->
 
 
 def _board_track(conn, board: str, from_date: str) -> list[tuple[str, float]]:
-    """某板块自 from_date 起的价格轨迹（(日期, 累计涨跌幅%)），取 sector_news 日批次。"""
+    """某板块自 from_date 起的价格轨迹（(日期, 累计涨跌幅%)），取 sector_news 日批次。
+
+    口径：当日该板块各条新闻 change_pct 的简单平均（等权近似）。
+    库内无成分股权重与复权因子，无法做净值加权；等权近似在成分结构
+    变化或复权场景下会失真，此处如实标注。
+    """
     rows = conn.execute(
         """
         SELECT substr(fetched_at, 1, 10) AS d, AVG(change_pct) AS chg
@@ -195,8 +207,6 @@ def build_review(conn, days: int = DEFAULT_DAYS, top_n: int = DEFAULT_TOP_N) -> 
 
     ⚠️ **只给事实**（首次事件日 / 事件数 / 之后累计涨跌），不下"该不该买"的结论。
     """
-    from datetime import datetime, timezone
-
     items: list[dict] = []
     for e in _event_series(conn, days=days, top_n=top_n):
         board = (e["theme"] or "").split(",")[0].strip()
@@ -207,7 +217,7 @@ def build_review(conn, days: int = DEFAULT_DAYS, top_n: int = DEFAULT_TOP_N) -> 
             "has_data": bool(track), "cum_pct": cum, "track": track,
         })
     return {
-        "as_of": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"),
+        "as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "days": days, "items": items,
         "note": "只给「事件首现 → 之后板块表现」的事实，不判断该不该买；"
                 "无价格轨迹的主题标 has_data=false（不编造）",

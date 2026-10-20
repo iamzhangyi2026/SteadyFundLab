@@ -23,8 +23,12 @@
 
 from __future__ import annotations
 
+import re
+
 from backend.config import get
 from backend.data import fetcher
+
+from . import money as _m
 
 
 # =============================================================================
@@ -125,6 +129,21 @@ def analyze_exposure(fund_code: str, year: int | None = None) -> dict:
     }
 
 
+# 行业名里含这些词的，不参与广义方向关键词的子串匹配：
+# 名字里带方向词但语义属于别类的细分行业（「消费贷」是信贷业务，
+# 不算「消费」方向；「消费电子」属电子制造，不算「消费」方向）。
+_SUBINDUSTRY_MISMATCH = ("贷", "电子")
+
+
+def _industry_hits(industry: str, keywords: list[str]) -> bool:
+    """行业名是否命中宣称方向的关键词（等值或子串，带细分行业排除）。"""
+    if not industry or not keywords:
+        return False
+    if any(bad in industry for bad in _SUBINDUSTRY_MISMATCH):
+        return False
+    return any(kw and (kw == industry or kw in industry) for kw in keywords)
+
+
 def detect_style_drift(
     fund_name: str, allocation: list[dict], threshold: float | None = None
 ) -> dict:
@@ -172,11 +191,11 @@ def detect_style_drift(
             "note": "名称中没有明确的行业指向词，不做漂移判断",
         }
 
-    # 用宣称行业的关键词去匹配实际行业名
+    # 用宣称行业的关键词去匹配实际行业名（等值或子串，细分行业按排除规则过滤）
     actual = sum(
         a["weight"]
         for a in allocation
-        if any(k in a["industry"] for k in keywords if k)
+        if _industry_hits(a.get("industry"), keywords)
     )
 
     drifted = actual < threshold
@@ -195,7 +214,6 @@ def detect_style_drift(
 # =============================================================================
 # 重叠度
 # =============================================================================
-
 
 def calc_overlap(holdings_a: list[dict], holdings_b: list[dict]) -> dict:
     """计算两只基金的重仓股重叠程度。
@@ -300,8 +318,8 @@ if __name__ == "__main__":
 
 # ===== 持仓辅助函数 =====
 
-def _latest_nav(conn, fund_code: str) -> float:
-    """最新**单位**净值；查不到返回 0.0。
+def _latest_nav(conn, fund_code: str) -> float | None:
+    """最新**单位**净值；查不到返回 None（调用方据此区分「无数据」与「0」）。
 
     ⚠️ 用 `nav` 而不是 `acc_nav`（累计净值）：有分红的基金两者差很多，
     拿累计净值算市值会**高估**（与 confirm_order 取成交净值是同一个道理）。
@@ -311,7 +329,7 @@ def _latest_nav(conn, fund_code: str) -> float:
         "ORDER BY nav_date DESC LIMIT 1",
         (fund_code,),
     ).fetchone()
-    return float(row["nav"]) if row else 0.0
+    return float(row["nav"]) if row else None
 
 
 def get_positions(conn) -> list[dict]:
@@ -319,7 +337,12 @@ def get_positions(conn) -> list[dict]:
 
     口径：活跃批次（remaining_shares > 0）汇总 + 最新单位净值算市值。
     返回每条含基金身份、申购状态、剩余份额、按剩余比例分摊的成本和最新单位净值市值。
+    净值缺失（刚添加未抓到）时 current_nav / current_value 为 None——「无数据」
+    不冒充 0，界面据此显示「—」。
     """
+    # 取批次明细在 Python 侧聚合：成本分摊按 Decimal 逐批算
+    # （口径与 budget.used_in_positions / position_summary 一致：原始份额折算），
+    # SQL 的 float 乘除会把部分赎回批次的成本放大、且误差随批次数累积。
     rows = conn.execute(
         """
         SELECT l.fund_code,
@@ -331,33 +354,51 @@ def get_positions(conn) -> list[dict]:
                (SELECT fs.purchase_status FROM fund_status fs
                 WHERE fs.fund_code = l.fund_code
                 ORDER BY fs.status_date DESC, fs.id DESC LIMIT 1) AS purchase_status,
-               SUM(l.remaining_shares) AS shares,
-               SUM(CASE WHEN l.shares > 0
-                        THEN l.cost_amount * l.remaining_shares / l.shares
-                        ELSE 0 END) AS cost
+               l.shares,
+               l.remaining_shares,
+               l.cost_amount
         FROM lots l
         LEFT JOIN funds f ON f.code = l.fund_code
         WHERE l.status = 'active' AND l.remaining_shares > 0
-        GROUP BY l.fund_code
         """
     ).fetchall()
 
-    out: list[dict] = []
+    agg: dict[str, dict] = {}
     for r in rows:
-        nav = _latest_nav(conn, r["fund_code"])
-        shares = float(r["shares"] or 0)
-        out.append({
-            "code": r["fund_code"],
+        code = r["fund_code"]
+        a = agg.setdefault(code, {
             "fund_name": r["name"] or "",
             "category": r["category"] or "",
             "is_qdii": bool(r["is_qdii"]),
             "min_purchase": r["min_purchase"],
             "purchase_limit": r["purchase_limit"],
             "purchase_status": r["purchase_status"],
+            "shares": _m.ZERO,
+            "cost": _m.ZERO,
+        })
+        a["shares"] += _m.q_shares(_m.D(r["remaining_shares"]))
+        orig = _m.D(r["shares"])
+        if orig > 0:
+            a["cost"] += _m.q_money(
+                _m.D(r["cost_amount"]) * _m.D(r["remaining_shares"]) / orig
+            )
+
+    out: list[dict] = []
+    for code, a in agg.items():
+        nav = _latest_nav(conn, code)
+        shares = float(a["shares"])
+        out.append({
+            "code": code,
+            "fund_name": a["fund_name"],
+            "category": a["category"],
+            "is_qdii": a["is_qdii"],
+            "min_purchase": a["min_purchase"],
+            "purchase_limit": a["purchase_limit"],
+            "purchase_status": a["purchase_status"],
             "shares": round(shares, 4),
-            "cost": round(float(r["cost"] or 0), 2),
-            "current_nav": round(nav, 4),
-            "current_value": round(shares * nav, 2),
+            "cost": float(a["cost"]),
+            "current_nav": round(nav, 4) if nav is not None else None,
+            "current_value": round(shares * nav, 2) if nav is not None else None,
         })
     return out
 
@@ -382,6 +423,8 @@ def add_fund(code: str, name: str = "", category: str = "", reason: str = "",
         code = (code or "").strip()
         if not code:
             return {"ok": False, "reason": "基金代码不能为空"}
+        if not re.fullmatch(r"\d{6}", code):
+            return {"ok": False, "reason": "基金代码须为 6 位数字（如 040001）"}
         now = datetime.now().isoformat(timespec="seconds")
         row = conn.execute("SELECT code, status FROM funds WHERE code=?", (code,)).fetchone()
         if row:

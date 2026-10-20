@@ -15,8 +15,7 @@
 
 2. **盈亏反过来影响可用预算**
    赚到的钱可以继续投，亏掉的钱会削减额度。这是复利逻辑，不是固定额度。
-   用户在 1000plan 里就是这么运作的：每月 1000 的真实节奏，
-   盈亏直接决定下个月能投多少。
+   按每月固定新增的真实节奏，盈亏直接决定下个月能投多少。
 
 会计等价校验
 ------------
@@ -30,9 +29,10 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import date
+from datetime import datetime
 
 from backend.config import get
+from .money import D, ZERO, q_money
 
 
 # 资金流水的类型常量。分开设是为了能区分「初始资金」和「每月新增」，
@@ -53,11 +53,17 @@ def _official_start() -> str:
 
 
 def _sum_by_type(conn: sqlite3.Connection, txn_type: str) -> float:
-    row = conn.execute(
-        "SELECT COALESCE(SUM(amount), 0) AS s FROM cash_ledger WHERE txn_type = ?",
-        (txn_type,),
-    ).fetchone()
-    return row["s"] if row else 0.0
+    """按类型汇总资金流水。
+
+    Decimal 逐笔求和后量化到 2 位——流水金额落库时已是 2 位，
+    求和链路不再引入浮点累积误差。
+    """
+    total = ZERO
+    for row in conn.execute(
+        "SELECT amount FROM cash_ledger WHERE txn_type = ?", (txn_type,)
+    ):
+        total += D(row["amount"])
+    return float(q_money(total))
 
 
 # =============================================================================
@@ -72,7 +78,7 @@ def init_capital(conn: sqlite3.Connection) -> bool:
     （测试期数据清零后，正式资金在到达启动月后才注入）。
     返回 True 表示本次真的入金了。
     """
-    if date.today().strftime("%Y-%m") < _official_start():
+    if datetime.now().date().strftime("%Y-%m") < _official_start():
         return False
 
     from backend.engine import orders
@@ -87,7 +93,7 @@ def init_capital(conn: sqlite3.Connection) -> bool:
     orders.append_ledger(
         conn, TXN_INITIAL, amount,
         note=f"初始资金 {amount:.0f} 元",
-        txn_date=date.today(),
+        txn_date=datetime.now().date(),
     )
     conn.commit()
     return True
@@ -106,7 +112,7 @@ def add_monthly_budget(conn: sqlite3.Connection, year_month: str | None = None) 
     """
     from backend.engine import orders
 
-    ym = year_month or date.today().strftime("%Y-%m")
+    ym = year_month or datetime.now().date().strftime("%Y-%m")
     # 正式启动月闸门：未到启动月绝不入账
     if ym < _official_start():
         return False
@@ -117,8 +123,9 @@ def add_monthly_budget(conn: sqlite3.Connection, year_month: str | None = None) 
     if ym <= create_ym:
         return False
     exists = conn.execute(
-        "SELECT COUNT(*) AS c FROM cash_ledger WHERE txn_type = ? AND note LIKE ?",
-        (TXN_MONTHLY, f"%{ym}%"),
+        "SELECT COUNT(*) AS c FROM cash_ledger "
+        "WHERE txn_type = ? AND substr(note, 1, 7) = ?",
+        (TXN_MONTHLY, ym),
     ).fetchone()["c"]
     if exists:
         return False
@@ -127,7 +134,7 @@ def add_monthly_budget(conn: sqlite3.Connection, year_month: str | None = None) 
     orders.append_ledger(
         conn, TXN_MONTHLY, amount,
         note=f"{ym} 月度新增预算",
-        txn_date=date.today(),
+        txn_date=datetime.now().date(),
     )
     conn.commit()
     return True
@@ -143,7 +150,7 @@ def inject_test_capital(conn: sqlite3.Connection, amount: float | None = None) -
     无需手动清理。返回 True 表示本次真的注入了。
     """
     # 已到正式启动月：试玩注资不再适用，正式初始资金走 init_capital
-    if date.today().strftime("%Y-%m") >= _official_start():
+    if datetime.now().date().strftime("%Y-%m") >= _official_start():
         return False
 
     from backend.engine import orders
@@ -158,7 +165,7 @@ def inject_test_capital(conn: sqlite3.Connection, amount: float | None = None) -
     orders.append_ledger(
         conn, TXN_TEST, amt,
         note=f"沙盒测试资金 {amt:.0f} 元（正式启动自动转正）",
-        txn_date=date.today(),
+        txn_date=datetime.now().date(),
     )
     conn.commit()
     return True
@@ -172,7 +179,7 @@ def rollover_test_capital(conn: sqlite3.Connection) -> bool:
     月增仍从官方启动月的下一个月累加（见 add_monthly_budget 的 create_ym）。
     返回 True 表示本次真的转正了。
     """
-    if date.today().strftime("%Y-%m") < _official_start():
+    if datetime.now().date().strftime("%Y-%m") < _official_start():
         return False
     exists = conn.execute(
         "SELECT COUNT(*) AS c FROM cash_ledger WHERE txn_type = ?",
@@ -213,35 +220,32 @@ def used_in_positions(conn: sqlite3.Connection) -> float:
     """已用金额 = 当前仍持仓的成本。
 
     按批次剩余份额占原始份额的比例折算成本：
-        批次成本 × (剩余份额 / 原��份额)
+        批次成本 × (剩余份额 / 原始份额)
     部分赎回过的批次只算未赎回那部分的成本。
+    Decimal 逐批折算求和后量化到 2 位。
     """
-    row = conn.execute(
-        """
-        SELECT COALESCE(SUM(
-            CASE WHEN shares > 0
-                 THEN cost_amount * (remaining_shares / shares)
-                 ELSE 0 END
-        ), 0) AS s
-        FROM lots WHERE shares > 0
-        """
-    ).fetchone()
-    return row["s"] if row else 0.0
+    total = ZERO
+    for row in conn.execute(
+        "SELECT cost_amount, shares, remaining_shares FROM lots WHERE shares > 0"
+    ):
+        sh = D(row["shares"])
+        if sh <= 0:
+            continue
+        total += D(row["cost_amount"]) * D(row["remaining_shares"]) / sh
+    return float(q_money(total))
 
 
 def redeemed_cost(conn: sqlite3.Connection) -> float:
-    """已赎回部分对应的原始成本。"""
-    row = conn.execute(
-        """
-        SELECT COALESCE(SUM(
-            CASE WHEN shares > 0
-                 THEN cost_amount * ((shares - remaining_shares) / shares)
-                 ELSE 0 END
-        ), 0) AS s
-        FROM lots WHERE shares > 0
-        """
-    ).fetchone()
-    return row["s"] if row else 0.0
+    """已赎回部分对应的原始成本。Decimal 逐批折算求和后量化到 2 位。"""
+    total = ZERO
+    for row in conn.execute(
+        "SELECT cost_amount, shares, remaining_shares FROM lots WHERE shares > 0"
+    ):
+        sh = D(row["shares"])
+        if sh <= 0:
+            continue
+        total += D(row["cost_amount"]) * (sh - D(row["remaining_shares"])) / sh
+    return float(q_money(total))
 
 
 def realized_pnl(conn: sqlite3.Connection) -> float:
@@ -251,14 +255,14 @@ def realized_pnl(conn: sqlite3.Connection) -> float:
     仍持仓那部分的浮动盈亏不计入——它还没落袋，
     计入会让可用预算虚高（账面赚钱但赎回来才发现要付赎回费）。
     """
-    redeemed = _sum_by_type(conn, TXN_REDEEM)
-    dividend = _sum_by_type(conn, TXN_DIVIDEND)
-    return redeemed + dividend - redeemed_cost(conn)
+    redeemed = D(_sum_by_type(conn, TXN_REDEEM))
+    dividend = D(_sum_by_type(conn, TXN_DIVIDEND))
+    return float(q_money(redeemed + dividend - D(redeemed_cost(conn))))
 
 
 def unrealized_pnl(conn: sqlite3.Connection) -> float:
     """浮动盈亏（未实现），仅用于展示，不计入可用预算。"""
-    total_mv = 0.0
+    total_mv = ZERO
     for row in conn.execute(
         "SELECT DISTINCT fund_code FROM lots WHERE remaining_shares > 0"
     ):
@@ -279,8 +283,8 @@ def unrealized_pnl(conn: sqlite3.Connection) -> float:
             """,
             (code,),
         ).fetchone()["s"]
-        total_mv += mv * nav_row["v"]
-    return total_mv - used_in_positions(conn)
+        total_mv += D(mv) * D(nav_row["v"])
+    return float(q_money(total_mv - D(used_in_positions(conn))))
 
 
 def pending_committed(conn: sqlite3.Connection) -> float:
@@ -294,25 +298,24 @@ def pending_committed(conn: sqlite3.Connection) -> float:
 
         这是个隐蔽的坑：单笔检查都能过，累计起来才爆。
     """
-    row = conn.execute(
-        """
-        SELECT COALESCE(SUM(amount), 0) AS s FROM orders
-        WHERE status = 'pending' AND side = 'buy'
-        """
-    ).fetchone()
-    return row["s"] if row else 0.0
+    total = ZERO
+    for row in conn.execute(
+        "SELECT amount FROM orders WHERE status = 'pending' AND side = 'buy'"
+    ):
+        total += D(row["amount"])
+    return float(q_money(total))
 
 
 def available_budget(conn: sqlite3.Connection) -> float:
     """可用预算 = 初始资金 + 累积新增 − 已用金额 + 投资收益 − 待确认冻结。"""
-    return (
-        initial_capital(conn)
-        + cumulative_added(conn)
-        + test_capital(conn)
-        - used_in_positions(conn)
-        + realized_pnl(conn)
-        - pending_committed(conn)
-    )
+    return float(q_money(
+        D(initial_capital(conn))
+        + D(cumulative_added(conn))
+        + D(test_capital(conn))
+        - D(used_in_positions(conn))
+        + D(realized_pnl(conn))
+        - D(pending_committed(conn))
+    ))
 
 
 def breakdown(conn: sqlite3.Connection) -> dict:

@@ -4,14 +4,14 @@
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime
 
 from ..db.schema import get_connection
 from . import rules, portfolio
 
 
 def monitor_positions(conn) -> dict:
-    as_of = date.today().isoformat()
+    as_of = datetime.now().date().isoformat()
     alerts = rules.check_discipline_all(conn, as_of)
     snap = portfolio.snapshot_portfolio(conn)
     codes = set()

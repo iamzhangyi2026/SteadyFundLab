@@ -132,7 +132,7 @@ def detect_anomalies(fund_code: str, window: int = 5) -> list[dict]:
 # 四档 action：hold / watch / reduce / clear，且受**持续性硬门槛**约束：
 #     分数低还要连续 N 天才允许升档，单日异常最多到 watch —— 防止"一跌就卖"。
 #
-# 口径统一：收益率 / 趋势 / 分位 / 回撤一律用**累计净值 acc_nav**；
+# 口径约定：收益率 / 趋势 / 分位 / 回撤一律用**累计净值 acc_nav**；
 # 单位净值 nav 只用于市值/份额/浮盈，不参与本模块任何计算。
 #
 # 为什么缺失维度要「剔除后归一化」而不是记 0 分：
@@ -146,7 +146,7 @@ DIMENSIONS = ("trend", "persist", "relative", "drawdown", "valuation", "news")
 def _nav_series(conn: sqlite3.Connection, fund_code: str, limit: int = 900):
     """取该基金按日期**升序**的累计净值序列。
 
-    说明：这里取 `COALESCE(acc_nav, nav)` —— 正常持仓都有 acc_nav，个别数据缺失
+    约定：这里取 `COALESCE(acc_nav, nav)` —— 正常持仓都有 acc_nav，个别数据缺失
     才回退 nav，避免把一个数字也没有的行当 0 参与计算（那会算出荒谬的收益率）。
     """
     rows = conn.execute(
@@ -289,7 +289,7 @@ def _score_relative(conn, dates, vals):
 
 
 def _score_drawdown(vals):
-    """回撤维（0~100）：最大回撤越大分越低。50% 回撤 = 0 分（对齐筛选规则 max_dd<50%）。"""
+    """回撤维（0~100）：最大回撤越大分越低。50% 回撤 = 0 分（对齐筛选约定 max_dd<50%）。"""
     dd = _max_drawdown(vals)
     if dd is None:
         return None, "回撤：数据不足"
@@ -311,7 +311,7 @@ def _score_news(conn, fund_code, as_of, window_days: int = 30):
     """舆情维（0~100）：近 N 天相关新闻的正/负面加权；**无新闻不惩罚**（没有消息≠利空）。"""
     # 只按 related_fund 精确匹配，**不能用 hit_holdings=1 兜底**：
     # hit_holdings 仅表示"这条新闻命中了某个持仓"，并不指向具体哪只基金，
-    # 用它匹配会把别的基金的新闻算到本基金头上（会让所有持仓舆情分都变成 100，
+    # 用它匹配会把别的基金的新闻算到本基金头上（所有持仓的舆情分都会变成 100，
     # 维度彻底失去区分度）。宁可 keywords 命中不到返回 None 剔除该维，也不张冠李戴。
     try:
         rows = conn.execute(
@@ -396,7 +396,7 @@ def evaluate_position_health(fund_code: str, as_of: str | None = None,
     own = conn is None
     conn = conn or get_connection()
     try:
-        as_of = as_of or date.today().isoformat()
+        as_of = as_of or datetime.now().date().isoformat()
         cfg = _health_config()
         dates, vals = _nav_series(conn, fund_code)
 
@@ -478,7 +478,7 @@ def assess_positions(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
     own = conn is None
     conn = conn or get_connection()
     try:
-        as_of = date.today().isoformat()
+        as_of = datetime.now().date().isoformat()
         codes = [r["fund_code"] for r in conn.execute(
             "SELECT DISTINCT fund_code FROM lots WHERE remaining_shares > 0"
         ).fetchall()]

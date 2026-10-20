@@ -2,10 +2,10 @@
 /**
  * shoot_all.cjs — 单进程内 spawn 无头 Chrome（CDP 驱动）给 fund-sandbox 全页截图。
  *
- * 为什么不用通用截图 CLI：其后台进程在某些托管环境会被终止（exit 3 /
- * 连接被掐）。本脚本用 Node 22 内置 WebSocket/fetch 自驱 CDP，遵循以下
- * 8 条技术要点：同进程起 Chrome、--in-process-gpu（非 --single-process）、SwiftShader
- * 软件渲染、禁用 --virtual-time-budget、等数据渲染再截全页。
+ * 为什么直接自驱 CDP：常驻式 CLI 在受限环境下会被 SIGTERM（连接被掐）。
+ * 本脚本用 Node 内置 WebSocket/fetch 自驱 CDP，要点：同进程起 Chrome、
+ * --in-process-gpu（非 --single-process）、SwiftShader 软件渲染、
+ * 禁用 --virtual-time-budget、等数据渲染再截全页。
  *
  * 用法：
  *   node scripts/shoot_all.cjs [--out DIR] [--app URL] [--width 1440] [--port 9222]
@@ -37,6 +37,14 @@ const isWin = process.platform === 'win32';
 function findChrome() {
   const p = arg('chrome', '');
   if (p && fs.existsSync(p)) return p;
+  const base = process.env.CHROME_DIR || path.join(os.homedir(), '.cache', 'chrome-headless');
+  if (fs.existsSync(base)) {
+    const vers = fs.readdirSync(base).filter((d) => d.startsWith('chrome-')).sort().reverse();
+    for (const v of vers) {
+      const c = path.join(base, v, 'chrome.exe');
+      if (fs.existsSync(c)) return c;
+    }
+  }
   for (const c of [
     'C:/Program Files/Google/Chrome/Application/chrome.exe',
     'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
@@ -102,7 +110,7 @@ async function waitReady(rpc) {
       expression: `(() => {
         const sk = document.querySelectorAll('.skeleton, .sk, [class*="skeleton"]').length;
         const tiles = document.querySelectorAll('.tile, .card').length;
-        const txt = (document.body.innerText || '').trim().length;   // '.page' 容器在分析页不存在 → 恒 0，会导致过早判定就绪、截到空页
+        const txt = (document.body.innerText || '').trim().length;   // ：原用 '.page' 容器，分析页没有该容器 → 恒 0，导致过早判定就绪、截到空页
         return { sk, tiles, txt };
       })()`,
       returnByValue: true,
@@ -111,7 +119,7 @@ async function waitReady(rpc) {
     if (v) {
       last = `skeleton=${v.sk} cards=${v.tiles} text=${v.txt}`;
       const el = Date.now() - start;
-      // 必须**骨架清零 + 有实质文本**才算就绪。
+      // ：必须**骨架清零 + 有实质文本**才算就绪。
       // 原条件 (tiles>0 || txt>120) 里 tiles 数的是 .card（卡片框架），
       // 卡片一渲染出来就 >0，于是数据还没到就 break → 截出来全是「暂无XX」。
       if (v.sk === 0 && v.txt > 200 && el >= SETTLE) break;

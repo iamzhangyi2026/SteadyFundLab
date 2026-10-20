@@ -9,6 +9,8 @@ from datetime import datetime
 
 from backend.real.db import get_connection
 
+# 快照日期按本机时区记，与 A 股交易日期口径一致
+
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -178,7 +180,8 @@ def confirm_import(import_id: int, rows: list, snap_date: str | None = None) -> 
     finally:
         c.close()
 
-    # 确认入库后**自动抓资料**——否则还要人工再点一次「刷新净值」才看得到数据。
+    # 确认入库后**自动抓资料**：持仓 OCR 入库后自动抓取资料，
+    # 否则还要人工再点一次「刷新净值」才看得到数据。
     # 抓取走**公共数据层**：命中公共行情（A 区已抓）直接复用，未命中才实时抓兜底；
     # 抓取失败不影响入库结果（持仓已落库）。
     nav_refresh = {"ok": False, "note": "无持仓代码，跳过"}

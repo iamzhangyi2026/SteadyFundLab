@@ -65,7 +65,7 @@ def generate(conn: sqlite3.Connection, as_of: date | None = None,
 
     返回结构化字典，可直接落 json，也能渲染成 markdown 给人读。
     """
-    as_of = as_of or date.today()
+    as_of = as_of or datetime.now().date()
     coord = coordinator.status()
     funds = fund_pool.pool_funds(conn)
 

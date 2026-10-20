@@ -1,6 +1,6 @@
 /* =========================================================================
    应用层样式：布局 + 组件。视觉地基来自 tokens.css（配色/间距/字号/圆角）。
-   设计约定：浅色主题、全点按/触摸、涨红跌绿、间距与字号精细调整。
+   设计准则：浅色主题、全点按/触摸、涨红跌绿、间距字号细调当一等任务。
    ========================================================================= */
 
 /* 全局 reset 与 body 基础样式已收敛到 tokens.css（单一事实来源），避免两套规范并存 */
@@ -396,7 +396,7 @@
 .bar-fill { height: 100%; border-radius: 999px; }
 .bar-fill.hot { background: linear-gradient(90deg, #f3a3a3, var(--up, #e23b3b)); }
 .bar-fill.risk { background: linear-gradient(90deg, #9fd9b8, var(--down, #1f9e5a)); }
-/* 兜底：kind 缺失或为 0 时不渲染成透明 */
+/* 兜底：kind 缺失或为 0 时仍可见，不被渲染成透明 */
 .bar-fill.flat { background: linear-gradient(90deg, #c9cfda, #98a1b0); }
 .bar-val { font-size: var(--fs-kicker); font-variant-numeric: tabular-nums; min-width: 78px; text-align: right; }
 
@@ -629,8 +629,7 @@
 .bar-row { grid-template-columns: 28px 132px 1fr auto; }
 
 /* 板块资金流卡：按内容自然高度排布、顶部对齐（不强制与同行等高）。
-   若用 flex 撑满 + space-between 均分，行间距会被拉大、观感稀疏；
-   因此改为不强制等高、行距走 .bar-row 默认紧凑间距。 */
+   flex 撑满 + space-between 均分会拉大行距、观感稀疏，故行距走 .bar-row 默认紧凑间距。 */
 /* .boards-card 走网格默认拉伸：与同行卡片等高（长度不变），
    空间靠「更多板块条」填充，而不是靠拉大行距。 */
 /* 不再给 card-body / board-bars 设 flex:1 撑满：
@@ -988,7 +987,7 @@ body { background: #f3f5f3; }
   line-height: 1.55;
 }
 .da-table th { color: var(--text-mute, #5b6675); font-weight: 600; white-space: nowrap; }
-/* 首列/次列不换行：否则窄列会被逐字挤成竖排 */
+/* 首列/次列不换行：否则窄列会被逐字挤成竖排（曾把「标的」列挤成一字一行） */
 .da-table td.nw { white-space: nowrap; }
 .da-table tr:last-child td { border-bottom: none; }
 /* 行内小注（跟在数值后面，不单独占一列，省宽度） */

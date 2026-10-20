@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-fund-sandbox FastAPI 主服务（桌面端重建版）
+fund-sandbox FastAPI 主服务（桌面端）
 - 端口 8765，仅绑 127.0.0.1（Electron 同源调用）
 - 接入全部引擎模块（真实世界规则：外扣法 / 赎回阶梯 / T+1 / 15:00 截单 / 只投场外）
 - 数据源失败自动降级，绝不抛 500（返回空/缺省，记录 data_health）
@@ -34,7 +34,7 @@ from ..engine import (
     coordinator, dingtou, recovery, fx, inspector, rule_watch,
     triage, sector_news, intel_collector, rss_news, macro_data, llm_pool,
     news_quality, event_key, board_alias, audit, active_news, flash_news, time_lag,
-    screen_rules, calendar, llm_client, ai_tools, analysis, review, screener, lag, news, health,
+    screen_rules, llm_client, ai_tools, analysis, review, screener, lag, news, health,
     news_collector, fund_pool,
 )
 from ..data import fetcher
@@ -63,7 +63,7 @@ def _rows(rs) -> list:
 
 
 def _today() -> str:
-    return date.today().isoformat()
+    return datetime.now().date().isoformat()
 
 
 def _now() -> str:
@@ -90,7 +90,7 @@ app.add_middleware(
 
 # B 区（真实仓位 · 人接管 · 隔离区）：独立命名空间 /api/real/*
 # 只 include 独立 router，不在 A 区逻辑里写 B 区代码——保持边界清晰。
-# 边界定义见 docs/项目/权限边界-人机隔离.md
+# 边界定义：账本隔离、数据共用。
 from ..real.api import router as real_router  # noqa: E402
 
 app.include_router(real_router)
@@ -107,9 +107,9 @@ def _startup():
     except Exception:
         pass
     # RSS 资讯后台抓取线程（每 30 分钟一轮，抓完**自动提取事件**）。
-    # ⚠️ 资讯/事件链路依赖此行（缺失会导致 market_news / news_triage 停更）：market_news / news_triage
-    #    / sector_news 数据全部停在 09-20）。rss_news.fetch_market_news 内部会调
-    #    intel_collector.collect_from_market_news 提取事件，故起这一个线程即恢复整条链路。
+    # market_news / news_triage / sector_news 数据由这条链路供给：
+    # rss_news.fetch_market_news 内部会调 intel_collector.collect_from_market_news
+    # 提取事件，故起这一个线程即恢复整条链路。
     try:
         rss_news.start_background()
     except Exception as e:  # noqa: BLE001
@@ -117,7 +117,7 @@ def _startup():
 
 
 def _post_startup():
-    # 预热 akshare：首次 _import_akshare 约 2.5 秒，
+    # 预热 akshare：首次导入约 2.5 秒，
     # 不预热的话第一个触发抓取的请求会莫名卡几秒。放后台线程，**不占启动时间**。
     try:
         t = fetcher.warm_akshare()
@@ -290,7 +290,7 @@ def _read_json_file(path: Path) -> dict:
 def _count_crashes_today() -> int:
     """当日后端日志里的 `[CRASH]` 计数（`log_setup` 用 sys.excepthook 打的标记）。"""
     try:
-        log_path = _LOG_DIR / f"backend-{date.today().isoformat()}.log"
+        log_path = _LOG_DIR / f"backend-{_today()}.log"
         if not log_path.exists():
             return 0
         return sum(
@@ -306,10 +306,7 @@ def _count_crashes_today() -> int:
 def api_diagnostics():
     """运行诊断（崩溃留痕 / 自动恢复 / 真实运行时长）。
 
-    原实现 `crashes: 0, restarts: 0` 是**硬编码**，
-    且 `uptime_hours = datetime.now().timestamp() / 3600` ≈ **49 万小时** —— 那是
-    1970 年至今的小时数，不是进程运行时长，纯无意义。前端「软件运行状态」卡因此长期显示假数据。
-    改为读真实来源：
+    数据来源：
       - 自动恢复次数 → `data/logs/watchdog-status.json` 的 `auto_restarts`（Electron 看护写入）
       - 当日崩溃数   → 当日日志的 `[CRASH]` 计数
       - 运行时长     → 本进程启动时刻
@@ -337,7 +334,7 @@ def api_account():
     with conn() as c:
         b = ledger.get_budget(c)
         positions = holdings.get_positions(c)
-    mv = round(sum(p["current_value"] for p in positions), 2)
+    mv = round(sum((p["current_value"] or 0) for p in positions), 2)
     cash = b["cash_balance"]
     return {
         "budget": b,
@@ -369,7 +366,10 @@ def api_positions():
             p["total_shares"] = p["shares"]
             p["total_cost"] = p["cost"]
             p["market_value"] = p["current_value"]
-            p["profit"] = round(p["current_value"] - p["cost"], 2)
+            # 净值缺失时 market_value / profit 为 None（界面显示「—」），
+            # 与前端 money()/pct() 的 null 处理对齐。
+            p["profit"] = (round(p["current_value"] - p["cost"], 2)
+                           if p["current_value"] is not None else None)
             p["purchase_status"] = _PS_ZH.get(p.get("purchase_status") or "", p.get("purchase_status"))
 
             acc_row = c.execute(
@@ -386,8 +386,8 @@ def api_positions():
                 p["twr_pct"] = twr.get("twr_pct") if twr.get("ok") else None
             except (TypeError, ValueError):
                 p["twr_pct"] = None
-            p["lots"] = ledger.holding_report(c, code, date.today())
-        total = sum(p["current_value"] for p in items)
+            p["lots"] = ledger.holding_report(c, code, datetime.now().date())
+        total = sum((p["current_value"] or 0) for p in items)
     return {"items": items, "total": len(items), "market_value": round(total, 2)}
 
 
@@ -542,20 +542,14 @@ def api_funds_add(req: AddFundRequest):
             detail="AI / 程序化添加基金必须填写 reason（说明为什么加入候选池）",
         )
     with conn() as c:
-        # 用 `fund_pool.add_fund`（交易池「一步到位」入口），而不是 `holdings.add_fund`（只写档案表）。
-        # 后者会带来三个可见后果：
-        #   ① 不解析名称/类型 → `funds.name` 落成基金代码，关注列表显示代码而非基金名；
-        #   ② 不抓历史净值 → 刚添加的基金要等下一轮调度才有点位，详情弹窗先是空的；
-        #   ③ `reactivate=False` → 已从池中移除（status='delisted'）的基金**加不回来**
-        #      （用户无法重新添加其中任何一只）。
-        # `fund_pool.add_fund` 做的正是：解析名称/类型 → 抓购买规则 → 抓历史净值 → UPSERT funds，
+        # 用 `fund_pool.add_fund`（交易池「一步到位」入口），而不是 `holdings.add_fund`（只写档案表）：
+        # `fund_pool.add_fund` 会解析名称/类型 → 抓购买规则 → 抓历史净值 → UPSERT funds，
         # 且 UPSERT 会把 status 置回 'active'（用户**主动**添加 = 应当复活，与「移除」语义不冲突）。
         r = fund_pool.add_fund(c, req.code)
         if not r.get("ok"):
             raise HTTPException(status_code=400, detail=r.get("note") or f"添加 {req.code} 失败")
         # reason 落库：人工添加允许留空 → 记 NULL，便于在库里区分「人工添加」与
         # 「AI 添加（带理由）」。added_at 一律记录（加入时间与来源无关）。
-        # 注：该列需在此处写入，否则读取侧取不到值。
         c.execute(
             "UPDATE funds SET add_reason=?, added_at=? WHERE code=?",
             (reason or None, datetime.now().isoformat(timespec="seconds"), req.code),
@@ -644,9 +638,15 @@ def api_fund_nav(code: str):
 @app.post("/api/fund/{code}/purchase")
 def api_fund_purchase(code: str, amount: float, reason: str = "", decision_source: str = "external"):
     with conn() as c:
-        o = orders.submit_order(c, code, "buy", amount, reason=reason, decision_source=decision_source)
-    if o.get("status") == "rejected":
-        raise HTTPException(status_code=400, detail=o.get("reject_reason"))
+        o = orders.submit_order(c, code, "buy", amount, reason=reason,
+                                decision_source=decision_source, purpose="buy")
+    # submit_order 返回 {"ok": bool, "reason": ...}，无 status 字段；
+    # 按 ok 判定，拒单一律 400，避免前端误报「下单成功」。
+    if not o.get("ok", False):
+        raise HTTPException(
+            status_code=400,
+            detail=o.get("reason") or o.get("reject_reason") or "下单被拒",
+        )
     return o
 
 
@@ -759,7 +759,7 @@ def api_exposure():
         pos = holdings.get_positions(c)
         by_cat: dict[str, float] = {}
         for p in pos:
-            by_cat[p.get("category") or "未知"] = by_cat.get(p.get("category") or "未知", 0.0) + p["current_value"]
+            by_cat[p.get("category") or "未知"] = by_cat.get(p.get("category") or "未知", 0.0) + (p["current_value"] or 0)
         total = sum(by_cat.values()) or 1.0
         breakdown = [{"industry": k, "weight": round(v / total * 100, 2)} for k, v in by_cat.items()]
     return {"industry_breakdown": breakdown, "risk_score": len(breakdown), "concentration_risk": "低" if len(breakdown) <= 3 else "中"}
@@ -774,9 +774,7 @@ def api_analysis():
     `boards`（板块资金流）/ `heatmap`（板块热力图）/ `exposure`（组合行业暴露）/
     `alloc_data`（环形图）/ `intel_summary` / `narrative`（人读叙述）/ `overlaps`。
 
-    ⚠️ ** 修（端到端检查发现的 BUG）**：原实现是**硬编码桩** ——
-    `{"overall_score": 0, "boards": [], ...}`，导致分析页整页全是
-    「暂无板块资金 / 暂无板块信号 / 无数据」。现接回 `engine.analysis` 的真实函数。
+    数据由 `engine.analysis` 的真实函数构建。
     """
     try:
         with conn() as c:
@@ -952,8 +950,8 @@ def api_news_refresh():
     """手动刷新资讯：RSS 市场资讯（抓 + 落库 + 提取事件）+ **持仓基金的公告 / 重仓股新闻**。
 
     后者写 `news_feed`（资讯页「基金公告 / 重仓股」的数据源），
-    由 `news_collector.refresh_news_feed` 维护：只按**真实持仓**抓，
-    全部 INSERT OR IGNORE —— 旧数据一条不删（后续总结分析要用）。
+    由 `news_collector.refresh_news_feed` 统一抓取（只增量，不删旧）：
+    只按**真实持仓**抓，全部 INSERT OR IGNORE —— 旧数据一条不删（后续总结分析要用）。
     """
     try:
         with conn() as c:
@@ -1070,7 +1068,7 @@ def api_screen_candidates(days: int = 3, top_n: int = 5, fetch: bool = False):
     """对「新闻导向候选」跑**项目筛选规则**：估值分位 / 近1年收益 / 最大回撤。
 
     规则：分位 <50% + ret_1y >0 + 最大回撤 <50%；买入前额外 <30%。
-    ⚠️ **只给事实与达标与否，不推荐买哪只** —— 买不买由接管 agent 判断。
+    ⚠️ **只给事实与达标与否，不推荐买哪只** —— 买不买由 AI 判断。
 
     参数：fetch=True 才补抓缺失净值（慢，分钟级）；默认只读本地净值。
     """
@@ -1237,7 +1235,21 @@ def api_ai_config_set(req: LLMConfigRequest):
         "system_prompt": "你是 fund-sandbox 的基金投资助手。基于账户状态、持仓、新闻、情报回答问题。简洁、可执行；不确定就说'我不确定'。",
         "created_at": datetime.now().isoformat(),
     }
-    (DATA_DIR / "llm_config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 原子写：中途被杀不留半截 JSON（否则下次加载 llm_client 解析失败 = 密钥丢失）
+    import os
+    import tempfile
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(DATA_DIR), prefix="llm_config", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(cfg, ensure_ascii=False, indent=2))
+        os.replace(tmp, DATA_DIR / "llm_config.json")
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return {"status": "saved", "model": req.model}
 
 
@@ -1304,9 +1316,8 @@ def _write_toml_values(values: dict) -> None:
             len(lines),
         )
         # 匹配**整行**：缩进 / key / 等号 / 旧值 / 可选行内注释。
-        # ⚠️ 必须连同旧值一起吃掉：曾写成正则只匹配到等号（`^(\s*)key\s*=`），
-        # 替换后变成 `key = 100 100`——新值接在旧值后面，TOML 直接解析失败，
-        # 整个配置变成空 dict。教训：行级改写要匹配到行尾，不能只匹配前缀。
+        # 正则必须吞掉旧值到行尾：只匹配到等号的话，新值会接在旧值后面，
+        # 写出的 TOML 直接解析失败。
         row = re.compile(rf"^(\s*){re.escape(key)}\s*=\s*(.*)$")
         hit = next((j for j in range(start + 1, end) if row.match(lines[j])), None)
         if hit is not None:
@@ -1330,7 +1341,22 @@ def _write_toml_values(values: dict) -> None:
         got = parsed.get(sec, {}).get(key)
         if got != val:
             raise ValueError(f"写回校验失败：{sec}.{key} 期望 {val!r}，实际 {got!r}")
-    path.write_text(new_text, encoding="utf-8")
+    # 原子写：先写同目录临时文件再 os.replace。直接 write_text 时进程
+    # 中途被杀会留下半截文件，引擎下次读到的就是空配置（全部规则
+    # 静默变默认值）。同盘 replace 是原子的，读者只会看到旧文或新文。
+    import os
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     # 热生效：清掉 config 模块的进程内缓存，下一次 config.get() 读到的就是新值
     _config._CONFIG = None
 
@@ -1341,8 +1367,6 @@ def api_settings():
 
     value 取 config.toml **当前生效值**（引擎 config.get 读的就是它），
     所以页面显示与实际执行永远一致。
-    修复前这里返回扁平对象，与前端读取的 `data.items` 不符，
-    导致设置页恒显示「设置加载失败」。
     """
     items = [
         {
@@ -1427,7 +1451,23 @@ def api_recovery_prune():
 def api_heartbeat(source: str = "ai", note: str = ""):
     try:
         payload = {"last_seen": datetime.now().isoformat(), "source": source, "note": note}
-        HEARTBEAT_FILE.write_text(json.dumps(payload), encoding="utf-8")
+        # 原子写：与 coordinator.touch_heartbeat 共用同一心跳文件，
+        # 半截 JSON 会让在线判定误判为离线。
+        import os
+        import tempfile
+        HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(HEARTBEAT_FILE.parent),
+                                   prefix=HEARTBEAT_FILE.name, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(payload))
+            os.replace(tmp, HEARTBEAT_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         return {"ok": True, **payload}
     except Exception as e:
         return {"ok": False, "error": str(e)}

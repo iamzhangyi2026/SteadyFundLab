@@ -17,10 +17,12 @@
 用 quota_usage 里 purpose='dingtou' 的记录判断本期是否已投，
 重复调用不会重复下单。
 
-    计划为空时的兼容
-    ----------------
-    若 dingtou_plan 表无任何启用计划，则 fallback 到全交易池（pool_funds，
-    含配置池种子 + 用户添加），每只基金按固定金额定投，由预算上限约束总规模。
+    计划为空时
+    ----------
+    若 dingtou_plan 表无任何启用计划且未显式传入 funds，则本期什么都不做：
+    候选池（pool_funds）是「值得关注的基金」，不等于「用户同意定投的基金」，
+    没有计划就自动买入候选池属于误买风险。定投的自动执行以「计划由人/agent
+    建立」为前提，而非「无计划时把候选池全买一遍」。
 """
 
 from __future__ import annotations
@@ -37,10 +39,47 @@ from backend.engine import budget, calendar, orders
 # 两个请求同时通过"本期是否已投"检查而重复建单（check-then-act 竞态）。
 _dt_lock = threading.Lock()
 
+# 直传 funds 路径（plan_id=None，无 dingtou_plan 行可 CAS）的进程级占位记录。
+# 与 DB CAS 等价的最小实现：本应用为单用户本地部署、单后端进程，
+# 进程内互斥已覆盖实际并发面；跨进程并发不在威胁模型内。
+_claimed_periods: set[tuple[str, str]] = set()
+
+
+def _compensate_orphan_marks(conn: sqlite3.Connection) -> list[dict]:
+    """补偿扫描：释放「CAS 已占位、本期却无定投记录」的孤儿标记。
+
+    CAS 占位（last_invested_period 写入并 commit）与 submit_order 建单之间
+    若进程崩溃，会留下「已标记无订单」的计划——不补偿的话 CAS 以后每次都判
+    「本期已投」，该期被永久跳过。quota_usage 里 purpose='dingtou' 的记录
+    是「本期真的建过单」的权威信号（订单与配额同一事务，有订单必有配额）。
+    """
+    rows = conn.execute(
+        "SELECT id, fund_code, last_invested_period FROM dingtou_plan "
+        "WHERE COALESCE(last_invested_period, '') <> ''"
+    ).fetchall()
+    fixed: list[dict] = []
+    for r in rows:
+        period = r["last_invested_period"]
+        has = conn.execute(
+            "SELECT COUNT(*) AS c FROM quota_usage "
+            "WHERE purpose='dingtou' AND fund_code=? AND substr(created_at,1,10) >= ?",
+            (r["fund_code"], period),
+        ).fetchone()["c"]
+        if not has:
+            conn.execute(
+                "UPDATE dingtou_plan SET last_invested_period=NULL WHERE id=?",
+                (r["id"],),
+            )
+            fixed.append({"plan_id": r["id"], "fund_code": r["fund_code"],
+                          "period": period})
+    if fixed:
+        conn.commit()
+    return fixed
+
 
 def period_start(frequency: str, as_of: date | None = None) -> date:
     """返回该期起始日：周定投=本周一，月定投=本月 1 号。"""
-    as_of = as_of or date.today()
+    as_of = as_of or datetime.now().date()
     if frequency == "monthly":
         return as_of.replace(day=1)
     return as_of - timedelta(days=as_of.weekday())
@@ -49,7 +88,7 @@ def period_start(frequency: str, as_of: date | None = None) -> date:
 def already_invested_this_period(conn: sqlite3.Connection, fund_code: str,
                                  frequency: str, as_of: date | None = None) -> bool:
     """本期该基金是否已投过（按频率判断周期）。"""
-    as_of = as_of or date.today()
+    as_of = as_of or datetime.now().date()
     ps = period_start(frequency, as_of).isoformat()
     row = conn.execute(
         """
@@ -101,6 +140,31 @@ def _deduction_target(plan_weekday, day_of_month, frequency: str,
 # 计划 CRUD
 # =============================================================================
 
+
+def _validate_plan_time_fields(weekday, day_of_month) -> str | None:
+    """校验定投计划的时间字段，返回错误原因（None = 通过）。
+
+    周定投日限周一至周五（渠道不支持周末，运行时也会忽略 5/6）；
+    月定投日限 1-28 号——2 月没有 29-31 号，设了会在短月静默不执行，
+    宁可创建/更新时拒绝，不留「计划存在却永远不扣款」的哑弹。
+    """
+    if weekday is not None:
+        try:
+            wd = int(weekday)
+        except (TypeError, ValueError):
+            return "weekday 必须是整数（0=周一 … 4=周五）"
+        if not (0 <= wd <= 4):
+            return "周定投日必须是周一至周五（0=周一 … 4=周五）"
+    if day_of_month is not None:
+        try:
+            dom = int(day_of_month)
+        except (TypeError, ValueError):
+            return "day_of_month 必须是整数（1-28）"
+        if not (1 <= dom <= 28):
+            return "月定投日必须是 1-28 号（2 月没有 29-31 号，设了会静默不执行）"
+    return None
+
+
 def get_plans(conn: sqlite3.Connection) -> list[dict]:
     """列出全部定投计划（含暂停的）。"""
     rows = conn.execute(
@@ -117,6 +181,9 @@ def add_plan(conn: sqlite3.Connection, fund_code: str, amount: float,
         return {"ok": False, "reason": "frequency 必须是 weekly 或 monthly"}
     if amount <= 0:
         return {"ok": False, "reason": "金额必须大于 0"}
+    why = _validate_plan_time_fields(weekday, day_of_month)
+    if why:
+        return {"ok": False, "reason": why}
     if not fund_name:
         r = conn.execute("SELECT name FROM funds WHERE code=?", (fund_code,)).fetchone()
         fund_name = r["name"] if r else fund_code
@@ -148,6 +215,9 @@ def update_plan(conn: sqlite3.Connection, plan_id: int, **fields) -> dict:
         return {"ok": False, "reason": "frequency 必须是 weekly 或 monthly"}
     if "amount" in sets and sets["amount"] <= 0:
         return {"ok": False, "reason": "金额必须大于 0"}
+    why = _validate_plan_time_fields(sets.get("weekday"), sets.get("day_of_month"))
+    if why:
+        return {"ok": False, "reason": why}
     placeholders = ", ".join(f"{k}=?" for k in sets)
     cur = conn.execute(
         f"UPDATE dingtou_plan SET {placeholders} WHERE id=?",
@@ -171,12 +241,11 @@ def delete_plan(conn: sqlite3.Connection, plan_id: int) -> dict:
 def _resolve_pool(conn: sqlite3.Connection, funds: list[dict] | None):
     """定投池来源：显式传入 > 计划表(启用) > **空**。
 
-    没有任何启用的定投计划时**不做回退**，定投池为空：
-    候选池是「值得关注的基金」，**不等于「用户同意定投的基金」**，
-    回退到候选池会让自动定投买入用户从未同意定投的基金。
-
-    「定投是唯一自动执行操作」的正确含义是：**定投计划一旦由人/agent 建立，其扣款自动执行** ——
-    而不是「没有计划时就把候选池全买一遍」。故无计划时返回空，什么都不做。
+    没有任何启用的定投计划时返回空，不回退到候选池
+    （`fund_pool.pool_funds(conn)`）：候选池是「值得关注的基金」，
+    **不等于「用户同意定投的基金」**，回退会让自动定投替用户买入
+    他从未同意定投的基金。定投的自动执行以「计划由人/agent 建立」为前提，
+    而非「没有计划时就把候选池全买一遍」。
     """
     if funds is not None:
         return funds
@@ -193,17 +262,25 @@ def execute_dingtou(conn: sqlite3.Connection, funds: list[dict] | None = None,
     """执行本期定投（按计划表或默认池，每只基金固定金额，幂等）。
 
     返回：
-        {"period": 本期起始日, "ok": [...], "skipped": [...]}
+        {"period": 本期起始日, "ok": [...], "skipped": [...],
+         "compensated": [被补偿释放的孤儿标记], "budget_after": ...}
+
+    开跑前先做补偿扫描（`_compensate_orphan_marks`）：清掉历史上
+    「CAS 占了标记却没建成单」的孤儿，避免这些期被永久跳过。
     """
     with _dt_lock:
-        as_of = as_of or date.today()
+        as_of = as_of or datetime.now().date()
         cal = cal or calendar.TradeCalendar()
         cal.load()
+
+        # 启动补偿：先清掉历史上「占了标记没建成单」的孤儿，再跑本期
+        compensated = _compensate_orphan_marks(conn)
 
         pool = _resolve_pool(conn, funds)
         if not pool:
             return {"period_start": period_start("weekly", as_of).isoformat(),
-                    "ok": [], "skipped": [], "budget_after": round(budget.available_budget(conn), 2)}
+                    "ok": [], "skipped": [], "compensated": compensated,
+                    "budget_after": round(budget.available_budget(conn), 2)}
 
         ok_list: list[dict] = []
         skip_list: list[dict] = []
@@ -232,6 +309,8 @@ def execute_dingtou(conn: sqlite3.Connection, funds: list[dict] | None = None,
                         (plan_id,),
                     )
                     conn.commit()
+                else:
+                    _claimed_periods.discard((code, period))
 
             # ① 历史兼容：quota_usage 里已记过本期（按原计划所属周期锚点）则跳过
             if already_invested_this_period(conn, code, freq, ref):
@@ -241,6 +320,7 @@ def execute_dingtou(conn: sqlite3.Connection, funds: list[dict] | None = None,
             # ② CAS 原子抢占本期执行权。
             #    SQLite 写操作串行化，并发请求里只有一个能 UPDATE 成功，
             #    彻底杜绝「先查后建」竞态造成的同一期重复扣款。
+            #    直传 funds 路径（无计划行）走进程级占位，与 DB CAS 同一互斥面。
             if plan_id is not None:
                 cur = conn.execute(
                     """
@@ -253,8 +333,16 @@ def execute_dingtou(conn: sqlite3.Connection, funds: list[dict] | None = None,
                 if cur.rowcount == 0:
                     skip_list.append({"fund_code": code, "name": name, "reason": "本期已投"})
                     continue
+            else:
+                claim = (code, period)
+                if claim in _claimed_periods:
+                    skip_list.append({"fund_code": code, "name": name, "reason": "本期已投"})
+                    continue
+                _claimed_periods.add(claim)
 
             # ③ 预算检查。不足则释放标记，本期不投（下期可再投）
+            #    这里的检查只是提前量；submit_order 内部会按同一口径做权威复检
+            #    （check_before_submit：现金 + 可用预算），双保险下不会超支。
             avail = budget.available_budget(conn)
             if amount > avail:
                 _release()
@@ -283,7 +371,7 @@ def execute_dingtou(conn: sqlite3.Connection, funds: list[dict] | None = None,
                     "timing": r["timing"]["hint"],
                 })
             else:
-                # 下单失败释放标记，允许修复后重试
+                # 下单失败释放本期标记，允许后续执行重新抢占
                 _release()
                 skip_list.append({
                     "fund_code": code, "name": name,
@@ -294,6 +382,7 @@ def execute_dingtou(conn: sqlite3.Connection, funds: list[dict] | None = None,
             "period_start": period_start(pool[0].get("frequency", "weekly") if pool else "weekly", as_of).isoformat(),
             "ok": ok_list,
             "skipped": skip_list,
+            "compensated": compensated,
             "budget_after": round(budget.available_budget(conn), 2),
         }
 
@@ -311,7 +400,7 @@ if __name__ == "__main__":
     print("=" * 78)
     print(f"\n执行前可用预算：{budget.available_budget(conn):.2f} 元")
 
-    add_plan(conn, "005827", 25.0, "weekly")
+    add_plan(conn, "040001", 25.0, "weekly")
     r = execute_dingtou(conn)
     print(f"\n本期（{r['period_start']}）成功 {len(r['ok'])} 笔：")
     for o in r["ok"]:
@@ -325,5 +414,5 @@ if __name__ == "__main__":
     conn.close()
 
 
-# main.py 路由 /api/dingtou/run 调用 run_dingtou；旧引擎命名为 execute_dingtou
+# main.py 路由 /api/dingtou/run 调用 run_dingtou
 run_dingtou = execute_dingtou

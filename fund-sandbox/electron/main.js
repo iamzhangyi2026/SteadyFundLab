@@ -3,7 +3,7 @@
  * ====================================
  * 这是一个**本地桌面应用**，不是网站。Electron 用 Chromium 内核渲染，
  * 但外面套的是原生窗口壳——没有地址栏、没有标签页、没有书签栏，
- * 双击打开就是一个普通桌面软件。
+ * 双击打开就是一个普通桌面软件，数据只在本机 127.0.0.1 流转。
  *
  * 架构
  * ----
@@ -34,7 +34,7 @@ const path = require('path');
 // 开发态：electron/ 的上一级（项目根）。
 // 打包态（electron-builder 把 backend/data/config/frontend/dist/runtime/python 作为 extraResources
 // 落在 process.resourcesPath）：用 resourcesPath，那里结构与开发态一致，后端 __file__ 相对解析照常工作。
-// 仅打包态的根目录取值不同，开发态与打包态行为一致。
+// 仅打包态取值不同，开发态行为一致（功能不变）。
 const ROOT = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, '..');
 
 // Python 解释器：只用随包打包的独立运行时 runtime/python（路径无关、换机器可跑）。
@@ -106,8 +106,8 @@ function spawnOnce() {
       }, 1500 * bootRetries);
       return;
     }
-    // 运行期退出：后端崩溃且非启动等待期时进入看护流程。
-    // 落盘记录 + 自动拉起，避免应用悄无声息地挂死、只能靠用户手动重开。
+    // 运行期退出需要显式处理：仅打印日志不足以察觉，打包成 exe 后连这行都看不到。
+    // 这里落盘记录并自动拉起。
     watchdogLog(`后端进程意外退出（exit code=${code}），进入自动拉起流程`);
     backendHealthy = false;
     scheduleRespawn();
@@ -125,8 +125,9 @@ function stopBooting() {
 }
 
 // ── 运行期看护（watchdog）────────────────────────────────────────────────────
-// 为什么需要：启动完成后若后端崩溃，Electron 默认不重拉，应用会悄无声息地挂死。
-// 这层 watchdog 负责运行期自动拉起后端，避免只能靠用户手动重开。
+// 为什么需要：Electron 仅在「启动等待期」内会自动重拉后端。启动完成后若
+// 后端崩溃，父进程什么都不做，应用就此停摆，只能靠用户重开——对方若是不懂
+// 后端崩溃后应用会就此停摆、只能重开，因此补上这层「看护工」。
 
 /**
  * 看护日志：写文件（事后查得到）+ 送渲染进程（界面上看得见）。
@@ -324,6 +325,71 @@ function createLoadingWindow() {
   return win;
 }
 
+/**
+ * 应用内轻量浏览器（资讯「阅读全文」用）
+ * --------------------------------------------
+ * Electron 自带 Chromium，所以「放进软件包里的轻量浏览器」就是再开一个
+ * BrowserWindow：无菜单、随主窗一起最小化，关窗只关这一个页面，不会跳出系统浏览器。
+ *
+ * 为什么不用 iframe / <webview>：
+ *   - 资讯站（东财 / 36氪 / 中新网等）多为 JS 重页面，嵌进 iframe 时登录态、反爬、
+ *     frame-ancestors 限制都可能让它变成一片空白，且没法正常翻页 / 点开；
+ *   - <webview> 要单独开 webviewTag，沙盒模式下能力面更宽，没必要。
+ *   - 独立 BrowserWindow 就是完整 Chromium 渲染，与用系统浏览器读同一页面等价，
+ *     只是不跳出这个软件。
+ */
+const inAppBrowsers = new Set();
+function openInAppBrowser(target) {
+  const url = String(target || '');
+  // 只放行 http(s)：挡掉 file:// / javascript: 之类，避免把本地文件读进这个窗口
+  if (!/^https?:\/\//i.test(url)) return null;
+
+  const page = new BrowserWindow({
+    width: 1020,
+    height: 720,
+    minWidth: 780,
+    minHeight: 520,
+    title: '正在加载…',
+    show: false,
+    parent: BrowserWindow.getFocusedWindow() || undefined,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // 不挂 preload：资讯页不需要 electronAPI，少一座桥就少一个攻击面
+    }
+  });
+  inAppBrowsers.add(page);
+  page.on('closed', () => inAppBrowsers.delete(page));
+
+  // 页内新窗口（target="_blank" / window.open）也留在应用内，不冒到系统浏览器
+  page.webContents.setWindowOpenHandler(({ url: u }) => {
+    const t = String(u || '');
+    if (/^https?:\/\//i.test(t)) {
+      page.loadURL(t);
+      return { action: 'deny' };
+    }
+    // mailto: / tel: / 其它协议交给系统
+    shell.openExternal(t).catch((err) => console.error('[inapp] openExternal failed:', err));
+    return { action: 'deny' };
+  });
+  // 顶层导航也限制成 http(s)，别的协议走系统
+  page.webContents.on('will-navigate', (e, u) => {
+    const t = String(u || '');
+    if (!/^https?:\/\//i.test(t)) {
+      e.preventDefault();
+      shell.openExternal(t).catch((err) => console.error('[inapp] openExternal failed:', err));
+    }
+  });
+  // 标题跟着网页走（超长截断），用户一眼知道在看哪个站
+  page.webContents.on('page-title-updated', (_e, title) => {
+    if (title) page.setTitle(title.length > 60 ? `${title.slice(0, 60)}…` : title);
+  });
+  page.once('ready-to-show', () => page.show());
+  page.loadURL(url);
+  return page;
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -483,6 +549,17 @@ function killPortOwner(port) {
 }
 
 app.whenReady().then(async () => {
+  // 渲染进程（资讯「阅读全文」）→ 应用内轻量浏览器窗口
+  ipcMain.handle('app:open-inapp', (_e, url) => {
+    const page = openInAppBrowser(url);
+    if (!page) {
+      console.warn('[main] open-inapp rejected (not http/https)):', String(url).slice(0, 80));
+      return false;
+    }
+    console.log('[main] open in-app browser:', String(url).slice(0, 120));
+    return true;
+  });
+
   // 渲染进程点「刷新」→ 全量重启：杀本次拉起的后端，relaunch 让新进程重新
   // 加载最新的 main.js / preload.js / 后端 Python 代码。旧进程退出时 ownBackend
   // 已置 false，不会误杀复用的外部后端（非本次拉起的）——这里显式清理本次拉起的。
@@ -516,7 +593,7 @@ app.whenReady().then(async () => {
     startBackend();
     ownBackend = true;
     try {
-      // 冷启动约 5 秒；留 60 秒余量防偶发卡顿，超时即报错而非干等
+      // 冷启动通常约 5 秒；留 60 秒余量防偶发卡顿，超时即报错而非干等
       await waitForServer(60000);
       stopBooting();
     } catch (err) {

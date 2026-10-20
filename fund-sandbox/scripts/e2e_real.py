@@ -182,7 +182,7 @@ def main() -> int:
               f"缺 {sorted(called - backend_norm)}")
 
         print("\n=== 13. 隔离规则静态核对（账本隔离 / 数据共用）===")
-        # 只隔离**账本**（真钱 vs 模拟）；行情/新闻/规则等真实资料共用一份。
+        # 边界：只隔离**账本**（真钱 vs 模拟）；行情/新闻/规则等真实资料共用一份。
         # A 区不得引用 B 区**业务逻辑**；唯一例外是只读 B 区持仓代码（把公共行情抓全）。
         bad_a = []
         for p in sorted(glob.glob(str(ROOT / "backend/engine/*.py"))) + \

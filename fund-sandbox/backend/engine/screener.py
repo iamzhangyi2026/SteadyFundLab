@@ -96,7 +96,7 @@ if __name__ == "__main__":
 
 # ===== 新闻导向候选挖掘 =====
 # 链路：事件热度 Top 主题 → 板块资金验证 → 候选基金（附可买性 + 筛选事实）
-# ⚠️ 只给事实与依据，**不推荐买哪只**（决策权在接管 agent）。
+# ⚠️ 只给事实与依据，**不推荐买哪只**（决策权在 AI）。
 
 FUNDS_PER_THEME = 12
 
@@ -172,10 +172,9 @@ def build_candidates(conn, days: int = 3, top_n: int = 5) -> dict:
 
     ⚠️ 只给依据与事实，**不代替决策**。
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    tz = timezone(timedelta(hours=8))
-    since = (datetime.now(tz) - timedelta(days=days)).strftime("%Y-%m-%d")
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
     rows = conn.execute(
         """
@@ -203,5 +202,5 @@ def build_candidates(conn, days: int = 3, top_n: int = 5) -> dict:
                            else "outflow" if (flow and flow["f"] and flow["f"] < 0)
                            else "unknown"),
         })
-    return {"as_of": datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S"),
+    return {"as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "days": days, "themes": themes}

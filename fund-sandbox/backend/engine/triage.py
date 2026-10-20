@@ -14,7 +14,8 @@ from typing import Any, Dict, List, Optional
 
 from ..db.schema import get_connection
 from . import board_alias
-# 板块映射走 board_alias 词表直接扫文本，不经过 `event_key.extract_event_keys`。
+# ⚠️  删 `from . import event_key`：板块映射改为「用 board_alias 词表直接扫文本」后
+# 它就没人用了（原实现走 `event_key.extract_event_keys` 取候选词，见 `EVENT_BOARD_RULES` 上方说明）。
 
 CATEGORIES = [
     "macro", "policy", "geo", "company", "fund",
@@ -24,8 +25,8 @@ CREDIBILITY_LEVELS = {"high", "medium", "low"}
 IMPACT_DIRS = {"positive", "negative", "neutral"}
 
 # 分类关键词（小写匹配）
-#  ① market 类补充「带幅度动词」映射
-#   ② 公司行动类词（避免公司动态落入 other）
+#  扩充：① market 类补充「带幅度动词」映射
+#   ② 补公司行动类词（公司行动类动态容易落 other）
 # 原则：只加高特异性词，避免泛词误伤（如「国际」太泛，未新增同类泛词）。
 _CAT_KW = {
     "policy": ["政策", "央行", "降准", "加息", "监管", "财政部", "国务院", "发文", "新规"],
@@ -104,7 +105,7 @@ def detect_surprise(text: str) -> Optional[str]:
 # =============================================================================
 #
 # 本映射为两层：第①层类别规则 + 第②层行业词反查。
-# 映射表来源见 docs/项目/事件-行业映射表.md。
+# 映射表来源见事件-行业映射表。
 #
 # 为什么必须有第①层：`geo` / `policy` / `macro` / `conference` 这几类事件的**影响面由事件类型决定**，
 # 而不是由文本里出现了哪个行业词决定 —— 例如「对华出口管制」本身不含任何行业词，
@@ -143,7 +144,7 @@ EVENT_BOARD_RULES: Dict[str, List[tuple]] = {
     ],
 }
 
-# 最多保留 3 个板块：「玻璃基板概念拉升」会映射出 4 个板块，等于没重点，
+# 最多保留 3 个板块：「玻璃基板概念拉升」可能映射出多个板块，等于没重点，
 # 下游还要逐个做资金验证，纯增噪声（沿用 `事件-行业映射表.md` 的质量约束）。
 _MAX_BOARDS = 3
 
@@ -177,8 +178,8 @@ def triage_news(text: str, category: Optional[str] = None) -> Dict[str, Any]:
         # ① 类别规则：事件类别（geo/macro/policy/conference/military）按触发词 → 板块。
         #    补的是「事件类型决定影响面」那层因果（如"出口管制"→半导体/军工/信创，文本里并无行业词）。
         # ② 行业词反查：文本直接出现行业词（锂电池/光伏/创新药…）→ 映射到该行业。
-        #    （不经过 `event_key.extract_event_keys`：它提取的是**短语**
-        #     「固态电池订单大增」，长度超标会被全滤掉 → impact_boards 恒空。）
+        #    （原实现走 `event_key.extract_event_keys` 取 2-5 字候选，但它提取的是**短语**
+        #     「固态电池订单大增」，长度超标被全滤掉 → impact_boards 恒空；改为直接扫词表。）
         boards: List[str] = []
         for b in _infer_boards_by_category(text, cat):
             canonical = board_alias.resolve_alias(b)

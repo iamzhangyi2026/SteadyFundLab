@@ -28,6 +28,7 @@
    不混用「百分比数值」和「小数」，避免 0.5 到底是 0.5% 还是 50% 的经典歧义。
 """
 
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -36,7 +37,7 @@ from pathlib import Path
 DB_PATH = Path(__file__).resolve().parents[2] / "data" / "fund_sandbox.db"
 
 # 当前 schema 版本。结构变更时必须递增，便于以后做迁移判断
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 TABLES: dict[str, str] = {}
@@ -45,7 +46,7 @@ TABLES: dict[str, str] = {}
 TABLES["funds"] = """
 -- 基金档案表。静态信息，抓取一次后更新即可
 CREATE TABLE IF NOT EXISTS funds (
-    code            TEXT PRIMARY KEY,   -- 基金代码，如 005827
+    code            TEXT PRIMARY KEY,   -- 基金代码，如 040001
     name            TEXT NOT NULL,      -- 基金全称
     short_name      TEXT,               -- 简称，界面显示用
     category        TEXT,               -- 类型：混合型 / 股票型 / 指数 / QDII / 债券
@@ -97,7 +98,7 @@ CREATE TABLE IF NOT EXISTS orders (
     order_id        INTEGER PRIMARY KEY AUTOINCREMENT,
     order_no        TEXT UNIQUE,        -- 业务流水号，形如 B20260828001
     fund_code       TEXT NOT NULL,
-    side            TEXT NOT NULL,      -- buy(申购) | sell(赎回)
+    side            TEXT NOT NULL CHECK (side IN ('buy', 'sell')),  -- buy(申购) | sell(赎回)
     amount          REAL,               -- 申购金额（元），buy 时有值
     shares          REAL,               -- 赎回份额，sell 时有值
 
@@ -107,7 +108,8 @@ CREATE TABLE IF NOT EXISTS orders (
     confirm_date    TEXT,               -- 份额确认日（T+1），持有期从这天起算
     arrival_date    TEXT,               -- 赎回资金到账日（T+3~T+4）
 
-    status          TEXT NOT NULL,      -- pending|confirmed|settled|rejected|cancelled
+    status          TEXT NOT NULL CHECK (status IN ('pending', 'confirmed', 'settled', 'rejected', 'cancelled')),
+                    -- pending|confirmed|settled|rejected|cancelled
     reject_reason   TEXT,               -- 被拒原因。风控或规则拦截时必须写清楚，便于复盘
 
     decision_source TEXT NOT NULL,      -- rule|external|llm。记录这笔是谁决定的，便于归因
@@ -159,12 +161,12 @@ CREATE TABLE IF NOT EXISTS cash_ledger (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     txn_date        TEXT NOT NULL,
     txn_type        TEXT NOT NULL,
-    -- deposit=期初入金/monthly_quota=月度配额
-    -- purchase=申购扣款  redeem=赎回到账  fee=费用扣除
-    -- dividend=分红到账  refund=撤单退款
+    -- initial=初始资金  monthly_add=月度新增  test_capital=沙盒测试资金
+    -- purchase=申购扣款(负数)  redeem=赎回到账  dividend=分红到账
+    -- fee=费用扣除  refund=撤单退款
     amount          REAL NOT NULL,      -- 正数=入账，负数=出账
     balance_after   REAL NOT NULL,      -- 本笔之后的账户余额（冗余字段，便于快速查询）
-    ref_order_id    INTEGER,            -- 关联订单（可空，如月度配额入金没有订单）
+    ref_order_id    INTEGER,            -- 关联订单（可空，如月度新增入金没有订单）
     note            TEXT,
     created_at      TEXT NOT NULL
 );
@@ -193,9 +195,7 @@ CREATE INDEX IF NOT EXISTS idx_div_fund ON dividends(fund_code, ex_date);
 """
 
 
-# board_daily 死表已删除（0 行、全项目零引用、无任何读写代码）。
-# 该列已废弃，仅保留向后兼容。
-# 为什么不需要它：板块涨跌幅/主力净流入由 sector_news 承担（每轮留痕更完整），
+# 没有 board_daily 表：板块涨跌幅/主力净流入由 sector_news 承担（每轮留痕更完整），
 # 板块→基金的映射走「基金名称匹配」，不依赖 board_code；唯一独有的 PE 分位数据源已失效。
 
 
@@ -278,7 +278,7 @@ CREATE TABLE IF NOT EXISTS market_news (
     summary         TEXT,               -- RSS 导语摘要（非全文）
     source          TEXT,               -- 源名：中国新闻网财经 | FT中文网 | 36氪
     source_url      TEXT,               -- 具体 feed 地址
-    pub_time        TEXT,               -- 发布时间（北京时间 ISO，YYYY-MM-DD HH:MM:SS）
+    pub_time        TEXT,               -- 发布时间（本机时区 ISO，YYYY-MM-DD HH:MM:SS）
     fetched_at      TEXT NOT NULL,      -- 抓取时间
     UNIQUE(link)
 );
@@ -329,11 +329,13 @@ CREATE TABLE IF NOT EXISTS fund_status (
     fund_code        TEXT NOT NULL,
     status_date      TEXT NOT NULL,     -- 状态快照所属日期
 
-    purchase_status  TEXT,              -- 开放申购|限大额|暂停申购|封闭期
-    redeem_status    TEXT,              -- 开放赎回|暂停赎回|封闭期
+    purchase_status  TEXT CHECK (purchase_status IN ('open', 'limited', 'closed', 'unknown')),
+                    -- 英文枚举入库：open=开放申购 | limited=限大额 | closed=暂停申购/封闭期 | unknown=未抓到
+    redeem_status    TEXT CHECK (redeem_status IN ('open', 'closed', 'unknown')),
+                    -- 英文枚举入库：open=开放赎回 | closed=暂停赎回/封闭期 | unknown=未抓到
     purchase_limit   REAL,              -- 单日申购限额（元）。NULL=不限
 
-    period_type      TEXT,              -- 开放式|封闭式|持有期|定期开放
+    period_type      TEXT CHECK (period_type IN ('开放式', '封闭式', '持有期', '定期开放')),
     hold_period_days INTEGER,           -- 持有期天数（持有期基金）
     next_open_date   TEXT,              -- 下一开放日（定期开放基金）
     lock_until       TEXT,              -- 份额锁定截止日
@@ -449,7 +451,7 @@ CREATE TABLE IF NOT EXISTS analysis_log (
 """
 
 TABLES["discipline_alerts"] = """
-CREATE TABLE discipline_alerts (
+CREATE TABLE IF NOT EXISTS discipline_alerts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     fund_code       TEXT NOT NULL,       -- 基金代码
     line_type       TEXT NOT NULL,       -- profit_take(止盈) | drawdown_cut(减仓) | admit_wrong(认错)
@@ -465,7 +467,7 @@ CREATE TABLE discipline_alerts (
 """
 
 TABLES["fund_fee"] = """
-CREATE TABLE fund_fee (
+CREATE TABLE IF NOT EXISTS fund_fee (
     fund_code       TEXT PRIMARY KEY,
     redeem_tiers    TEXT,               -- JSON: [{label, days_min, days_max, rate}]
     redeem_raw      TEXT,               -- 原始返回文本（便于人工核对，不丢证据）
@@ -475,7 +477,7 @@ CREATE TABLE fund_fee (
 """
 
 TABLES["fx_rate"] = """
-CREATE TABLE fx_rate (
+CREATE TABLE IF NOT EXISTS fx_rate (
     pair        TEXT NOT NULL,          -- 货币对，如 USD/CNY
     rate_date   TEXT NOT NULL,          -- 日期（YYYY-MM-DD）
     rate        REAL NOT NULL,          -- 中间价（标准写法，如 6.7521）
@@ -487,12 +489,12 @@ CREATE TABLE fx_rate (
 """
 
 TABLES["meta"] = """
-CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)
 ;    -- 抓取/同步状态记录表
 """
 
 TABLES["news_triage"] = """
-CREATE TABLE news_triage (
+CREATE TABLE IF NOT EXISTS news_triage (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     dedup_key       TEXT NOT NULL,       -- 事件指纹（归一化标题哈希），同事件唯一
     title           TEXT NOT NULL,
@@ -519,7 +521,7 @@ CREATE TABLE news_triage (
 """
 
 TABLES["position_health"] = """
-CREATE TABLE position_health (
+CREATE TABLE IF NOT EXISTS position_health (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     fund_code       TEXT NOT NULL,      -- 基金代码
     fund_name       TEXT,               -- 基金名称（冗余存，便于展示）
@@ -543,7 +545,7 @@ CREATE TABLE position_health (
 """
 
 TABLES["rule_change_log"] = """
-CREATE TABLE rule_change_log (
+CREATE TABLE IF NOT EXISTS rule_change_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     fund_code   TEXT NOT NULL,
     kind        TEXT NOT NULL,          -- purchase_status | redeem_fee
@@ -631,6 +633,15 @@ EXTRA_COLUMNS = [
 def _ensure_columns(conn: sqlite3.Connection) -> None:
     """补齐后加的列。已存在则跳过，安全重复执行。"""
     for table, col, decl in EXTRA_COLUMNS:
+        # PRAGMA 与 ALTER TABLE 都不支持绑定参数，表名/列名只能拼进 SQL。
+        # 三者均来自本文件顶部的 EXTRA_COLUMNS 硬编码清单，仍做白名单校验，
+        # 防止将来误把外部输入混进清单时形成注入面。
+        if table not in TABLES:
+            raise ValueError(f"_ensure_columns: 未知表名 {table!r}")
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*", col):
+            raise ValueError(f"_ensure_columns: 非法列名 {col!r}")
+        if not re.fullmatch(r"(INTEGER|REAL|TEXT)( DEFAULT -?[0-9.]+)?", decl):
+            raise ValueError(f"_ensure_columns: 非法列声明 {decl!r}")
         cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
         if col not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
@@ -642,6 +653,9 @@ def init_db(db_path: Path | None = None) -> Path:
 
     用 CREATE TABLE IF NOT EXISTS，因此可以安全地重复执行，
     不会因为数据库已存在而报错或清空数据。
+
+    注意：CHECK 约束只对**新建库**生效——SQLite 不支持给已存在的表
+    添加约束，已存在的库沿用建库时的结构，由应用层校验兜底。
     """
     path = db_path or DB_PATH
     conn = get_connection(path)
@@ -650,7 +664,8 @@ def init_db(db_path: Path | None = None) -> Path:
             try:
                 conn.executescript(sql)
             except sqlite3.OperationalError as e:
-                # 表已存在时 CREATE TABLE 报 already exists —— 幂等跳过，不阻断启动
+                # 防御性兜底：建表语句均带 IF NOT EXISTS，正常不会走到这里；
+                # 万一并发初始化撞上已存在的表，跳过而不阻断启动
                 if "already exists" in str(e):
                     continue
                 raise

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * audit_layout.cjs — 用 CDP 逐页核对布局对齐（统计条是否撑满、卡片左右边缘是否一致）。
+ * audit_layout.cjs — 用 CDP 逐页检查布局对齐（统计条是否撑满、卡片左右边缘是否一致）。
  * 不截图，只读 getBoundingClientRect，输出可核对的数字。端口 9226。
  * 用法：node scripts/audit_layout.cjs [--port 9226]
  */
@@ -18,6 +18,13 @@ const VIEWS = arg('views', 'overview,positions,trade,news,analysis,intel,triage,
 const isWin = process.platform === 'win32';
 
 function findChrome() {
+  const base = process.env.CHROME_DIR || path.join(os.homedir(), '.cache', 'chrome-headless');
+  if (fs.existsSync(base)) {
+    for (const v of fs.readdirSync(base).filter((d) => d.startsWith('chrome-')).sort().reverse()) {
+      const c = path.join(base, v, 'chrome.exe');
+      if (fs.existsSync(c)) return c;
+    }
+  }
   for (const c of ['C:/Program Files/Google/Chrome/Application/chrome.exe']) if (fs.existsSync(c)) return c;
   return null;
 }

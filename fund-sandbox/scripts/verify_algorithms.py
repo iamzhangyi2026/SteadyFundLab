@@ -1,21 +1,16 @@
 # -*- coding: utf-8 -*-
-"""核心算法正确性验证。
+"""核心算法正确性验证（定期检查关键算法行为）。
 
 筛选规则算错 → 选出的基金就是错的 → 直接违背项目目的。
 所以用**已知答案的手工序列**验证，而不是"跑通就算对"。
 
 用法：runtime\\python\\python.exe scripts\\verify_algorithms.py
-（顺带一个教训：首版这个脚本自己有 3 处错 —— 期望值算错、check() 不支持 None 期望 ——
-  导致误报 5 项"算法失败"。**测试本身也会错，失败时先怀疑测试**。）
-
-筛选规则算错 → 选出的基金就是错的 → 直接违背项目目的。
-所以用**已知答案的手工序列**验证，而不是"跑通就算对"。
 """
-import os
 import sys
+from pathlib import Path
 
-# 相对路径：本脚本在 fund-sandbox/scripts/，上一级即 fund-sandbox 根，可正确 import backend
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from backend.engine import screen_rules as sr  # noqa: E402
 
