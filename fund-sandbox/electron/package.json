@@ -1,6 +1,6 @@
 {
   "name": "fund-sandbox",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "基金模拟交易沙盒桌面端：Electron 原生窗口壳 + Python(FastAPI) 后端",
   "main": "main.js",
   "private": true,
