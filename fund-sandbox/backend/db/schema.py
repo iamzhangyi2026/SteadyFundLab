@@ -280,6 +280,7 @@ CREATE TABLE IF NOT EXISTS market_news (
     source_url      TEXT,               -- 具体 feed 地址
     pub_time        TEXT,               -- 发布时间（本机时区 ISO，YYYY-MM-DD HH:MM:SS）
     fetched_at      TEXT NOT NULL,      -- 抓取时间
+    is_official     INTEGER DEFAULT 0,  -- 是否官媒来源（情报采集的信任度加权用）
     UNIQUE(link)
 );
 CREATE INDEX IF NOT EXISTS idx_market_news_time ON market_news(pub_time);
@@ -620,6 +621,8 @@ EXTRA_COLUMNS = [
     ("funds", "min_purchase", "REAL DEFAULT 1.0"),
     # 基金入选理由（前端列表展示），建表语句未含、依赖此处在旧库/新库统一补齐
     ("funds", "add_reason", "TEXT"),
+    # market_news 官媒标记：情报采集（collect_from_market_news）按此列读取，旧库补齐防缺列
+    ("market_news", "is_official", "INTEGER DEFAULT 0"),
     ("news_triage", "surprise", "TEXT"),
     ("news_triage", "impact_concepts", "TEXT"),
     ("sector_news", "board_type", "TEXT"),
