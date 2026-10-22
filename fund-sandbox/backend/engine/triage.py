@@ -14,8 +14,8 @@ from typing import Any, Dict, List, Optional
 
 from ..db.schema import get_connection
 from . import board_alias
-# ⚠️  删 `from . import event_key`：板块映射改为「用 board_alias 词表直接扫文本」后
-# 它就没人用了（原实现走 `event_key.extract_event_keys` 取候选词，见 `EVENT_BOARD_RULES` 上方说明）。
+# 板块映射不引入 `event_key` 候选词提取，直接用 board_alias 词表扫文本
+# （候选词层会带来短语长度超标问题，见下方「板块映射」两层说明）。
 
 CATEGORIES = [
     "macro", "policy", "geo", "company", "fund",
@@ -27,23 +27,23 @@ IMPACT_DIRS = {"positive", "negative", "neutral"}
 # 分类关键词（小写匹配）
 #  扩充：① market 类补充「带幅度动词」映射
 #   ② 补公司行动类词（公司行动类动态容易落 other）
-# 原则：只加高特异性词，避免泛词误伤（如「国际」太泛，未新增同类泛词）。
+# 原则：只加高特异性词，避免泛词误伤（如「国际/行业/份额/装备」在非对应语境误命中率太高，已收窄）。
 _CAT_KW = {
     "policy": ["政策", "央行", "降准", "加息", "监管", "财政部", "国务院", "发文", "新规"],
-    "geo": ["国际", "美国", "中东", "地缘", "欧盟", "制裁", "关税", "乌克兰", "俄罗斯"],
+    "geo": ["美国", "中东", "地缘", "欧盟", "制裁", "关税", "乌克兰", "俄罗斯"],
     "company": [
         "公司", "财报", "业绩", "营收", "利润", "董事长", "高管", "ipo", "并购",
         "推出", "上线", "上架", "交付", "起诉", "诉讼", "首席执行官", "ceo",
         "收购", "债务", "订阅", "裁员", "罢工", "召回",
     ],
-    "fund": ["基金", "定投", "净值", "基金经理", "份额", "申购", "赎回"],
-    "sector": ["板块", "行业", "赛道", "产业", "概念"],
+    "fund": ["基金", "定投", "净值", "基金经理", "申购", "赎回"],
+    "sector": ["板块", "赛道", "产业", "概念"],
     "market": [
         "股市", "a股", "港股", "美股", "指数", "涨跌", "收盘", "成交量", "行情",
         "涨超", "跌超", "站上", "跌破", "飙升", "跳水", "涨停", "跌停",
         "创新高", "历史新高", "涨幅", "跌幅", "股价",
     ],
-    "military": ["军事", "军演", "装备", "国防", "导弹", "战机", "军队"],
+    "military": ["军事", "军演", "国防", "导弹", "战机", "军队"],
     "macro": ["gdp", "通胀", "cpi", "ppi", "失业率", "经济", "利率", "非农", "衰退"],
 }
 
@@ -98,6 +98,32 @@ def detect_surprise(text: str) -> Optional[str]:
     if any(k in t for k in _SURPRISE_NEG):
         return "negative"
     return None
+
+
+def signal_strength(ev: Dict[str, Any]) -> Dict[str, object]:
+    """事件信号强度 0–100 + 档位（强 / 中 / 弱）—— **只读展示，不含任何仓位 / 交易建议**。
+
+    综合已落库的**事实字段**加权，不猜预期值（项目无结构化预期数据）：
+    - 超预期表述（surprise）权重最高 —— 新闻的价值在「超预期」；
+    - 可信度（credibility，多源交叉验证程度）次之；
+    - 官方源（is_official）、有传导目标（impact_boards / impact_concepts，能连到行业才可分析）、
+      方向明确（impact_dir 非 neutral）依次递补。
+
+    为什么读时算而不落库：强度是展示派生量、权重可随时调；落库需全量回填、
+    权重变更要再迁移，读时算零回填风险。
+    """
+    score = 0
+    if ev.get("surprise") in ("positive", "negative"):
+        score += 40
+    score += {"high": 30, "medium": 15, "low": 0}.get(ev.get("credibility"), 0)
+    if ev.get("is_official"):
+        score += 15
+    if ev.get("impact_boards") or ev.get("impact_concepts"):
+        score += 10
+    if ev.get("impact_dir") in ("positive", "negative"):
+        score += 5
+    level = "强" if score >= 70 else ("中" if score >= 40 else "弱")
+    return {"signal_strength": score, "signal_level": level}
 
 
 # =============================================================================
@@ -178,8 +204,8 @@ def triage_news(text: str, category: Optional[str] = None) -> Dict[str, Any]:
         # ① 类别规则：事件类别（geo/macro/policy/conference/military）按触发词 → 板块。
         #    补的是「事件类型决定影响面」那层因果（如"出口管制"→半导体/军工/信创，文本里并无行业词）。
         # ② 行业词反查：文本直接出现行业词（锂电池/光伏/创新药…）→ 映射到该行业。
-        #    （原实现走 `event_key.extract_event_keys` 取 2-5 字候选，但它提取的是**短语**
-        #     「固态电池订单大增」，长度超标被全滤掉 → impact_boards 恒空；改为直接扫词表。）
+        #    直接扫词表，而非先提取候选短语：短语（如「固态电池订单大增」）会因长度超标
+        #    被行业名匹配整体滤掉，导致 impact_boards 恒空。
         boards: List[str] = []
         for b in _infer_boards_by_category(text, cat):
             canonical = board_alias.resolve_alias(b)

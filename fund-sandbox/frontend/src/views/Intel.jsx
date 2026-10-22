@@ -96,6 +96,11 @@ export default function Intel() {
                 <span className={`tag ${DIR[it.impact_dir] || 'neutral'}`}>
                   {DIR_LABEL[it.impact_dir] || '中性'}
                 </span>
+                {it.signal_level && (
+                  <span className={`tag ${it.signal_level === '强' ? 'accent' : 'neutral'}`}>
+                    信号 {it.signal_level}
+                  </span>
+                )}
               </div>
               <h4>{it.title}</h4>
               {it.detail && <p>{it.detail}</p>}

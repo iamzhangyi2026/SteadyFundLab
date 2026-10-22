@@ -354,6 +354,8 @@
 .list-item p { margin: 0; font-size: var(--fs-kicker); color: var(--text-mute, #5b6675); line-height: 1.5; }
 .meta { font-size: var(--fs-kicker); color: var(--text-mute, #5b6675); margin-top: var(--space-2); display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center; }
 .link-btn { background: none; border: none; color: var(--accent, #3b6ea5); cursor: pointer; font-size: var(--fs-kicker); font-weight: 600; padding: 0; }
+/* 表格行内操作组：与 A 区持仓页一致的胶囊按钮排布，按钮之间留间距、不换行保持行高整齐 */
+.row-actions { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 
 /* ---------- 资讯头条轮播 ---------- */
 .news-rotator {

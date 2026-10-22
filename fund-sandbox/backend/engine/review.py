@@ -260,3 +260,45 @@ def build_calibration(conn, days: int = 60, top_n: int = 30) -> dict:
         "avg_cum": avg_cum, "items": items, "conclusion": concl,
         "note": "只归纳统计事实，不自动改映射规则；无价格轨迹的主题标 nodata（不编造）",
     }
+
+
+# ===== I8 复盘库：校准快照持久化（预测 vs 实际，随复盘演进） =====
+def _ensure_review_snapshots(conn) -> None:
+    """复盘快照表（幂等建表；独立于 schema.TABLES，避免动核心 schema 迁移）。"""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS review_snapshots ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "as_of TEXT, days INTEGER, total INTEGER, with_data INTEGER, "
+        "up INTEGER, down INTEGER, nodata INTEGER, avg_cum REAL, conclusion TEXT)"
+    )
+
+
+def save_calibration_snapshot(conn, days: int = 60) -> dict:
+    """跑一次映射校准并存快照 —— 沉淀「事件预测 vs 板块实际」的演进，供 I8 复盘。
+
+    只存统计事实，不自动改映射规则。返回本次快照摘要。
+    """
+    _ensure_review_snapshots(conn)
+    cal = build_calibration(conn, days=days)
+    conn.execute(
+        "INSERT INTO review_snapshots "
+        "(as_of, days, total, with_data, up, down, nodata, avg_cum, conclusion) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (cal["as_of"], days, cal["total"], cal["with_data"], cal["up"],
+         cal["down"], cal["nodata"], cal["avg_cum"], cal["conclusion"]),
+    )
+    conn.commit()
+    return {"ok": True, "as_of": cal["as_of"], "with_data": cal["with_data"],
+            "up": cal["up"], "down": cal["down"], "avg_cum": cal["avg_cum"]}
+
+
+def calibration_history(conn, limit: int = 30) -> dict:
+    """复盘快照时间序列（只读）—— 看「新闻是主信号」的校准统计如何随复盘演进。"""
+    _ensure_review_snapshots(conn)
+    rows = conn.execute(
+        "SELECT as_of, days, total, with_data, up, down, nodata, avg_cum "
+        "FROM review_snapshots ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    items = [dict(r) for r in rows]
+    return {"items": list(reversed(items)), "count": len(items),
+            "note": "校准统计快照的演进；只存事实，不自动改映射规则"}

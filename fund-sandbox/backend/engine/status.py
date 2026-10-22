@@ -353,8 +353,7 @@ def _status_from_row(row, is_qdii: bool, market: str) -> dict:
         "limit_unknown": purchase == "limited" and row.get("purchase_limit") is None,
         "raw_purchase": raw_purchase,
         "raw_redeem": raw_redeem,
-        "qdii": check_qdii_calendar(row.get("fund_code", ""), is_qdii, snap_d,
-                                    market or "us"),
+        "qdii": check_qdii_calendar(row.get("fund_code", ""), is_qdii, snap_d, market),
         "from_cache": True,
     }
 

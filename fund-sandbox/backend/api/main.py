@@ -391,6 +391,50 @@ def api_positions():
     return {"items": items, "total": len(items), "market_value": round(total, 2)}
 
 
+@app.get("/api/holdings/valuation")
+def api_holdings_valuation():
+    """每只沙盒持仓的估值状态（只读展示）。
+
+    历史分位 / 近1年收益 / 最大回撤复用 `screen_rules.evaluate_fund`（单一来源，不重造算法）；
+    zone 口径与项目筛选一致：历史分位 <50% = 低估（洼地）。
+    纯只读，不含任何交易 / 仓位建议。
+    """
+    from backend.engine import screen_rules
+
+    with conn() as c:
+        items = holdings.get_positions(c)
+        out = []
+        for p in items:
+            code = p["code"]
+            ev = screen_rules.evaluate_fund(c, code)
+            pct = ev.get("percentile")
+            if pct is None:
+                zone, action = None, "数据不足"
+            elif pct < 50:
+                zone, action = "低估", "低谷区"
+            elif pct <= 80:
+                zone, action = "合理", "中位区"
+            else:
+                zone, action = "高估", "高位区"
+            nav_row = c.execute(
+                "SELECT nav, nav_date FROM nav_daily WHERE fund_code=? "
+                "ORDER BY nav_date DESC LIMIT 1", (code,)
+            ).fetchone()
+            out.append({
+                "fund_code": code,
+                "fund_name": p.get("fund_name") or code,
+                "nav": nav_row["nav"] if nav_row else None,
+                "nav_date": nav_row["nav_date"] if nav_row else None,
+                "percentile": pct,
+                "zone": zone,
+                "action": action,
+                "ret_1y": ev.get("ret_1y"),
+                "max_dd": ev.get("max_dd"),
+                "data_ok": ev.get("data_ok"),
+            })
+    return {"holdings": out, "total": len(out)}
+
+
 @app.get("/api/orders")
 def api_orders(status: Optional[str] = Query(None), limit: int = Query(100)):
     with conn() as c:
@@ -1010,7 +1054,11 @@ def api_triage_stream(limit: int = Query(50)):
 @app.get("/api/intel")
 def api_intel(limit: int = Query(50)):
     with conn() as c:
-        return {"items": intel_collector.get_intel_events(c, limit=limit), "total": 0}
+        items = intel_collector.get_intel_events(c, limit=limit)
+        from backend.engine import triage
+        for ev in items:
+            ev.update(triage.signal_strength(ev))
+        return {"items": items, "total": 0}
 
 
 @app.post("/api/intel/collect")

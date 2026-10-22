@@ -8,6 +8,7 @@ fund-sandbox 配置模块（桌面端）
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -72,9 +73,9 @@ def test_funds() -> list[dict]:
         finally:
             conn.close()
     except Exception as e:
-        # 不静默：候选池为空时界面上能看到原因（库未初始化 / 连接失败），
-        # 而不是「筛选结果为空」这种无法归因的表现。
-        print(f"[config] test_funds 读取 funds 表失败：{type(e).__name__}: {e}")
+        # 不静默：失败原因进 logging（可从日志归因），而不是只剩「筛选结果为空」无从排查
+        logging.getLogger(__name__).warning(
+            "test_funds 读取 funds 表失败：%s: %s", type(e).__name__, e)
         return []
 
 

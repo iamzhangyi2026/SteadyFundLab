@@ -100,6 +100,22 @@ def delete_holding(fund_code: str):
     return store.delete_holding(fund_code)
 
 
+class UpdateHoldingPayload(BaseModel):
+    fund_name: str | None = None
+    shares: float | None = None
+    cost_amount: float | None = None
+    market_amount: float | None = None
+
+
+@router.put("/holdings/{fund_code}")
+def update_holding(fund_code: str, payload: UpdateHoldingPayload):
+    """人工修改单只持仓。写操作，只应由人经界面触发。"""
+    return store.update_holding(
+        fund_code, payload.fund_name, payload.shares,
+        payload.cost_amount, payload.market_amount,
+    )
+
+
 @router.post("/nav/refresh")
 def refresh_nav():
     return store.refresh_nav()

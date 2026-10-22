@@ -106,8 +106,8 @@ function spawnOnce() {
       }, 1500 * bootRetries);
       return;
     }
-    // 运行期退出需要显式处理：仅打印日志不足以察觉，打包成 exe 后连这行都看不到。
-    // 这里落盘记录并自动拉起。
+    // 运行期退出：后端崩溃且非启动等待期时进入看护流程。
+    // 落盘记录 + 自动拉起，避免应用悄无声息地挂死、只能靠用户手动重开。
     watchdogLog(`后端进程意外退出（exit code=${code}），进入自动拉起流程`);
     backendHealthy = false;
     scheduleRespawn();
@@ -126,8 +126,8 @@ function stopBooting() {
 
 // ── 运行期看护（watchdog）────────────────────────────────────────────────────
 // 为什么需要：Electron 仅在「启动等待期」内会自动重拉后端。启动完成后若
-// 后端崩溃，父进程什么都不做，应用就此停摆，只能靠用户重开——对方若是不懂
-// 后端崩溃后应用会就此停摆、只能重开，因此补上这层「看护工」。
+// 后端崩溃，父进程不会重拉，应用会悄无声息地挂死。
+// 这层 watchdog 负责运行期自动拉起后端，避免只能靠用户手动重开。
 
 /**
  * 看护日志：写文件（事后查得到）+ 送渲染进程（界面上看得见）。
@@ -426,7 +426,7 @@ function createWindow() {
     if (handleExternal(url)) return { action: 'deny' };
     return { action: 'allow' };
   });
-  // 旧版/某些 target="_blank" 场景兜底用 new-window
+  // 部分场景的 target="_blank" 兜底用 new-window
   win.webContents.on('new-window', (e, url) => {
     e.preventDefault();
     handleExternal(url);

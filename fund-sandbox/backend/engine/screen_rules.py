@@ -58,6 +58,30 @@ def ret_1y(series: list[float]) -> Optional[float]:
     return (series[-1] / series[-69] - 1) * 100 if series[-69] > 0 else None
 
 
+def tracking_error(fund_vals: list[float], index_vals: list[float]) -> Optional[float]:
+    """跟踪误差（年化 %）：基金与基准指数**日收益率差**的样本标准差 × √252。
+
+    供 I7「主题→基金选择标准」按需评估被动 / 指数基金的跟踪质量；
+    **按需单只算，非全市场批量** —— akshare 无批量跟踪误差源，管理费 / 规模亦无可靠批量源
+    （该限制已记录于 `docs/项目/需求台账.md`）。序列不足或长度不匹配返回 None。
+    """
+    def _rets(vals: list[float]) -> list[float]:
+        out: list[float] = []
+        for a, b in zip(vals, vals[1:]):
+            if a and b and a > 0:
+                out.append(b / a - 1.0)
+        return out
+
+    fr, ir = _rets(fund_vals), _rets(index_vals)
+    n = min(len(fr), len(ir))
+    if n < 20:
+        return None
+    diffs = [fr[i] - ir[i] for i in range(n)]
+    mean = sum(diffs) / n
+    var = sum((d - mean) ** 2 for d in diffs) / (n - 1)
+    return (var ** 0.5) * (252 ** 0.5) * 100
+
+
 def ret_3m(series: list[float]) -> Optional[float]:
     """近3月收益率"""
     if not series or len(series) < 60:

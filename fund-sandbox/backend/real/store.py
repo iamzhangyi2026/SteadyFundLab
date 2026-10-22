@@ -213,6 +213,50 @@ def delete_holding(fund_code: str) -> dict:
         c.close()
 
 
+def update_holding(fund_code: str, fund_name: str | None = None,
+                   shares: float | None = None, cost_amount: float | None = None,
+                   market_amount: float | None = None) -> dict:
+    """人工修改单只持仓：份额 / 成本 / 市值 / 名称，留空（None）表示该项不改。
+
+    profit / profit_rate 一律由「市值 − 成本」重算，不接受外部传入——
+    手填的盈亏会和账目不平。金额在本函数内量化到分（B 区口径与 A 区一致：
+    REAL 列存 double，量化只修计算链误差）。
+    """
+    c = get_connection()
+    try:
+        cur = c.execute(
+            "SELECT * FROM real_holdings WHERE fund_code=?", (fund_code,)
+        ).fetchone()
+        if not cur:
+            return {"ok": False, "reason": "持仓不存在"}
+
+        new_name = cur["fund_name"]
+        if fund_name is not None:
+            new_name = fund_name.strip() or cur["fund_name"]
+        new_shares = cur["shares"] if shares is None else round(float(shares), 4)
+        new_cost = cur["cost_amount"] if cost_amount is None else round(float(cost_amount), 2)
+        new_market = cur["market_amount"] if market_amount is None else round(float(market_amount), 2)
+
+        for label, v in (("份额", new_shares), ("成本", new_cost), ("市值", new_market)):
+            if v is not None and v < 0:
+                return {"ok": False, "reason": f"{label}不能为负"}
+
+        profit = None if new_market is None else round(new_market - new_cost, 2)
+        rate = None if (profit is None or not new_cost) else round(profit / new_cost, 6)
+
+        c.execute(
+            "UPDATE real_holdings SET fund_name=?, shares=?, cost_amount=?, "
+            "market_amount=?, profit=?, profit_rate=?, updated_at=? WHERE fund_code=?",
+            (new_name, new_shares, new_cost, new_market, profit, rate,
+             _now(), fund_code),
+        )
+        c.commit()
+        return {"ok": True, "fund_code": fund_code,
+                "profit": profit, "profit_rate": rate}
+    finally:
+        c.close()
+
+
 def refresh_nav(codes: list | None = None) -> dict:
     """抓取真实持仓基金的最新净值与**盘中估值**，写入 real_nav。codes 为空则取全部持仓。"""
     from backend.real import nav as real_nav

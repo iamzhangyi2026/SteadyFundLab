@@ -109,7 +109,10 @@ def main() -> int:
                             "cost_amount": 3000.0, "market_amount": 3123.45, "profit": 123.45,
                             "profit_rate": 0.0395}]}
         j = requests.post(f"{BASE}/imports/{iid}/confirm", json=payload, timeout=30).json()
-        check("POST /imports/{id}/confirm", j.get("holdings_count") == 4, str(j)[:70])
+        # 动态取确认后持仓数，不写死：确认后实际持仓数随导入内容变化，硬编码会误报
+        expected = requests.get(f"{BASE}/holdings", timeout=30).json().get("summary", {}).get("holdings_count")
+        check("POST /imports/{id}/confirm", j.get("holdings_count") == expected,
+              f"confirm={j.get('holdings_count')} expect={expected}（动态）")
 
         print("\n=== 5. 持仓列表 ===")
         j = requests.get(f"{BASE}/holdings", timeout=30).json()
@@ -144,13 +147,13 @@ def main() -> int:
         print("\n=== 8. 快照：手动生成（snap_date 为主键，同日覆盖）===")
         n0 = len(requests.get(f"{BASE}/snapshots?limit=5", timeout=20).json().get("snapshots", []))
         j1 = requests.post(f"{BASE}/snapshots", timeout=30).json()
-        check("POST /snapshots 落一条", j1.get("ok") is True and j1.get("holdings_count") == 4,
+        check("POST /snapshots 落一条", j1.get("ok") is True and j1.get("holdings_count") == expected,
               str(j1)[:70])
         snaps = requests.get(f"{BASE}/snapshots?limit=5", timeout=20).json().get("snapshots", [])
         today_row = next((s for s in snaps if s.get("snap_date") == j1.get("snap_date")), None)
         check("今日快照存在且数值一致", today_row is not None
               and abs(today_row.get("total_market", 0) - j1.get("total_market", -1)) < 0.01
-              and today_row.get("holdings_count") == 4, f"总数 {n0} → {len(snaps)}（同日覆盖）")
+              and today_row.get("holdings_count") == expected, f"总数 {n0} → {len(snaps)}（同日覆盖）")
 
         print("\n=== 9. 丢弃导入（另建一条再丢）===")
         j = requests.post(f"{BASE}/imports/text", json={"text": "000001 华夏成长混合 10 100 110"},
@@ -182,7 +185,7 @@ def main() -> int:
               f"缺 {sorted(called - backend_norm)}")
 
         print("\n=== 13. 隔离规则静态核对（账本隔离 / 数据共用）===")
-        # 边界：只隔离**账本**（真钱 vs 模拟）；行情/新闻/规则等真实资料共用一份。
+        # 边界（2026-10-16 修正）：只隔离**账本**（真钱 vs 模拟）；行情/新闻/规则等真实资料共用一份。
         # A 区不得引用 B 区**业务逻辑**；唯一例外是只读 B 区持仓代码（把公共行情抓全）。
         bad_a = []
         for p in sorted(glob.glob(str(ROOT / "backend/engine/*.py"))) + \

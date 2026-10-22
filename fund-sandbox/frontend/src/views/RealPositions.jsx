@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useStore } from '../store/useStore'
 import Card from '../components/Card'
+import ConfirmDialog from '../components/ConfirmDialog'
 import EmptyState from '../components/EmptyState'
+import Modal from '../components/Modal'
 import StatStrip from '../components/StatStrip'
 import RealFundModal from '../components/RealFundModal'
 import { money, pct, date } from '../lib/format'
@@ -29,6 +31,14 @@ export default function RealPositions() {
   const [busy, setBusy] = useState(false)
   const [detailCode, setDetailCode] = useState(() => new URLSearchParams(window.location.search).get('detail'))
   const [sortDesc, setSortDesc] = useState(true)
+  const [plans, setPlans] = useState([])
+  const [planFor, setPlanFor] = useState(null)
+  const [planDel, setPlanDel] = useState(null)
+  const [editFor, setEditFor] = useState(null)
+  const [delFor, setDelFor] = useState(null)
+  const [planForm, setPlanForm] = useState({ amount: '25', frequency: 'weekly', weekday: '0', day_of_month: '1' })
+  const [editForm, setEditForm] = useState({ fund_name: '', shares: '', cost_amount: '', market_amount: '' })
+  const [saving, setSaving] = useState(false)
   const [autoSec, setAutoSec] = useState(() => {
     const raw = localStorage.getItem('fund-sandbox.real-autorefresh')
     if (raw == null) return 30
@@ -44,6 +54,10 @@ export default function RealPositions() {
       setSummary(h.summary || null)
       const s = await j(`${API}/snapshots?limit=30`)
       setSnapshots(s.snapshots || [])
+      try {
+        const p = await j('/api/dingtou/plans')
+        setPlans(p.items || [])
+      } catch (e) { void e }
     } catch (e) {
       notify('读取真实仓位失败：' + e.message, 'error')
     }
@@ -186,13 +200,147 @@ export default function RealPositions() {
     setCand(null)
   }
 
-  const del = async (code) => {
+  // 删除走二次确认（不可逆：库里无软删，删了要重新导入才能回来）
+  const del = (h) => setDelFor({ code: h.fund_code, name: h.fund_name || h.fund_code })
+
+  const confirmDelete = async () => {
+    const target = delFor
+    if (!target) return
     try {
-      await j(`${API}/holdings/${code}`, { method: 'DELETE' })
-      notify('已删除 ' + code, 'success')
+      await j(`${API}/holdings/${target.code}`, { method: 'DELETE' })
+      notify('已删除 ' + target.name, 'success')
+      setDelFor(null)
       load()
     } catch (e) {
       notify('删除失败：' + e.message, 'error')
+      throw e
+    }
+  }
+
+  // ── 定投计划（dingtou 计划由 A 区沙盒执行；此处只提供人发起入口）──
+  const planByCode = {}
+  for (const p of plans) planByCode[p.fund_code] = p
+
+  const openPlan = (h) => {
+    const plan = planByCode[h.fund_code] || null
+    setPlanForm({
+      amount: plan ? String(plan.amount) : '25',
+      frequency: plan ? plan.frequency : 'weekly',
+      weekday: String(plan ? plan.weekday : 0),
+      day_of_month: String(plan ? plan.day_of_month : 1),
+    })
+    setPlanFor({ code: h.fund_code, name: h.fund_name || h.fund_code, plan })
+  }
+
+  const submitPlan = async () => {
+    const amount = Number(planForm.amount)
+    if (!(amount > 0)) { notify('每期金额必须大于 0', 'error'); return }
+    setSaving(true)
+    try {
+      const body = {
+        fund_code: planFor.code,
+        fund_name: planFor.name,
+        amount,
+        frequency: planForm.frequency,
+        weekday: planForm.frequency === 'weekly' ? Number(planForm.weekday) : 0,
+        day_of_month: planForm.frequency === 'monthly' ? Number(planForm.day_of_month) : 1,
+        enabled: planFor.plan ? planFor.plan.enabled : 1,
+      }
+      const r = planFor.plan
+        ? await j(`/api/dingtou/plans/${planFor.plan.id}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          })
+        : await j('/api/dingtou/plans', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          })
+      if (r.ok === false) throw new Error(r.reason || '保存失败')
+      notify(planFor.plan ? '定投计划已更新' : '定投计划已创建', 'success')
+      setPlanFor(null)
+      load()
+    } catch (e) {
+      notify('保存定投计划失败：' + e.message, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const togglePlan = async () => {
+    const p = planFor.plan
+    try {
+      await j(`/api/dingtou/plans/${p.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fund_code: p.fund_code, amount: p.amount, frequency: p.frequency,
+          weekday: p.weekday, day_of_month: p.day_of_month,
+          fund_name: p.fund_name || null, enabled: p.enabled ? 0 : 1,
+        }),
+      })
+      notify(p.enabled ? '定投已暂停' : '定投已恢复', 'success')
+      setPlanFor(null)
+      load()
+    } catch (e) {
+      notify('操作失败：' + e.message, 'error')
+    }
+  }
+
+  const confirmDeletePlan = async () => {
+    const p = planDel
+    if (!p) return
+    try {
+      await j(`/api/dingtou/plans/${p.id}`, { method: 'DELETE' })
+      notify('已删除定投计划', 'success')
+      setPlanDel(null)
+      setPlanFor(null)
+      load()
+    } catch (e) {
+      notify('删除失败：' + e.message, 'error')
+      throw e
+    }
+  }
+
+  // ── 修改持仓（人经界面触发；profit 由后端按市值−成本重算）──
+  const openEdit = (h) => {
+    setEditForm({
+      fund_name: h.fund_name || '',
+      shares: h.shares != null ? String(h.shares) : '',
+      cost_amount: h.cost_amount != null ? String(h.cost_amount) : '',
+      market_amount: h.market_amount != null ? String(h.market_amount) : '',
+    })
+    setEditFor(h)
+  }
+
+  const submitEdit = async () => {
+    const num = (v) => (v === '' ? null : Number(v))
+    const shares = num(editForm.shares)
+    const cost = num(editForm.cost_amount)
+    const market = num(editForm.market_amount)
+    for (const [label, v] of [['份额', shares], ['成本', cost], ['市值', market]]) {
+      if (v != null && (!Number.isFinite(v) || v < 0)) {
+        notify(`${label}必须是不小于 0 的数字`, 'error')
+        return
+      }
+    }
+    setSaving(true)
+    try {
+      const r = await j(`${API}/holdings/${editFor.fund_code}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fund_name: editForm.fund_name, shares,
+          cost_amount: cost, market_amount: market,
+        }),
+      })
+      if (r.ok === false) throw new Error(r.reason || '保存失败')
+      notify('已保存修改', 'success')
+      setEditFor(null)
+      load()
+    } catch (e) {
+      notify('保存失败：' + e.message, 'error')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -259,7 +407,7 @@ export default function RealPositions() {
                   涨跌幅 {sortDesc ? '▽' : '△'}
                 </th>
                 <th className="num">估算收益</th>
-                <th></th>
+                <th style={{ minWidth: 132 }}>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -285,7 +433,20 @@ export default function RealPositions() {
                     </td>
                     <td className={`num ${toneCls(c)}`}>{c != null ? pct(c) : '—'}</td>
                     <td className={`num ${toneCls(estProfit)}`}>{estProfit != null ? money(estProfit) : '—'}</td>
-                    <td><button className="link-btn" onClick={() => del(h.fund_code)}>删除</button></td>
+                    <td>
+                      <div className="row-actions">
+                        <button
+                          className={`btn btn-sm${planByCode[h.fund_code] && !planByCode[h.fund_code].enabled ? ' btn-ghost' : ''}`}
+                          onClick={() => openPlan(h)}
+                        >
+                          {planByCode[h.fund_code]
+                            ? (planByCode[h.fund_code].enabled ? '定投中' : '已暂停')
+                            : '定投'}
+                        </button>
+                        <button className="btn btn-sm" onClick={() => openEdit(h)}>修改</button>
+                        <button className="btn btn-sm btn-danger" onClick={() => del(h)}>删除</button>
+                      </div>
+                    </td>
                   </tr>
                 )
               })}
@@ -311,7 +472,7 @@ export default function RealPositions() {
               value={text}
               onChange={(e) => setText(e.target.value)}
               rows={4}
-              placeholder={'或直接粘贴文本，每行一只基金，含 6 位代码与金额，例如：\n华安创新混合 040001 份额 5000 市值 12345.67 成本 12000'}
+              placeholder={'或直接粘贴文本，每行一只基金，含 6 位代码与金额，例如：\n华夏成长混合 040001 份额 5000 市值 12345.67 成本 12000'}
               style={{ width: '100%', fontFamily: 'monospace', fontSize: 13 }}
             />
           </div>
@@ -382,6 +543,137 @@ export default function RealPositions() {
           </table>
         )}
       </Card>
+
+      <Modal
+        open={!!planFor}
+        title={planFor?.plan ? '定投计划' : '新建定投计划'}
+        onClose={() => setPlanFor(null)}
+        width={460}
+      >
+        {planFor && (
+          <div className="stack" style={{ gap: 12 }}>
+            <div className="muted" style={{ fontSize: 13 }}>
+              {planFor.name}（{planFor.code}）
+            </div>
+            <div className="field">
+              <label>频率</label>
+              <select
+                value={planForm.frequency}
+                onChange={(e) => setPlanForm((f) => ({ ...f, frequency: e.target.value }))}
+              >
+                <option value="weekly">每周</option>
+                <option value="monthly">每月</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>每期金额（元）</label>
+              <input
+                type="number" min="1" step="1" value={planForm.amount} data-autofocus
+                onChange={(e) => setPlanForm((f) => ({ ...f, amount: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label>扣款日</label>
+              {planForm.frequency === 'weekly' ? (
+                <select
+                  value={planForm.weekday}
+                  onChange={(e) => setPlanForm((f) => ({ ...f, weekday: e.target.value }))}
+                >
+                  <option value="0">周一</option>
+                  <option value="1">周二</option>
+                  <option value="2">周三</option>
+                  <option value="3">周四</option>
+                  <option value="4">周五</option>
+                </select>
+              ) : (
+                <select
+                  value={planForm.day_of_month}
+                  onChange={(e) => setPlanForm((f) => ({ ...f, day_of_month: e.target.value }))}
+                >
+                  {Array.from({ length: 28 }, (_, i) => (
+                    <option key={i + 1} value={i + 1}>{i + 1} 号</option>
+                  ))}
+                </select>
+              )}
+            </div>
+            {planFor.plan && (
+              <div className="tag-row">
+                <button className="btn btn-sm" onClick={togglePlan}>
+                  {planFor.plan.enabled ? '暂停计划' : '恢复计划'}
+                </button>
+                <button className="btn btn-sm btn-danger" onClick={() => setPlanDel(planFor.plan)}>
+                  删除计划
+                </button>
+              </div>
+            )}
+            <button className="btn btn-primary" style={{ width: '100%' }} disabled={saving} onClick={submitPlan}>
+              {saving ? '保存中…' : '保存'}
+            </button>
+          </div>
+        )}
+      </Modal>
+
+      <ConfirmDialog
+        open={!!planDel}
+        title="删除定投计划"
+        message={planDel
+          ? `将删除「${planDel.fund_name || planDel.fund_code}」的定投计划，已持仓份额不受影响。确定删除？`
+          : ''}
+        danger
+        onConfirm={confirmDeletePlan}
+        onClose={() => setPlanDel(null)}
+      />
+
+      <Modal open={!!editFor} title="修改持仓" onClose={() => setEditFor(null)} width={460}>
+        {editFor && (
+          <div className="stack" style={{ gap: 12 }}>
+            <div className="muted" style={{ fontSize: 13 }}>{editFor.fund_code}</div>
+            <div className="field">
+              <label>基金名称</label>
+              <input
+                value={editForm.fund_name} data-autofocus
+                onChange={(e) => setEditForm((f) => ({ ...f, fund_name: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label>持有份额</label>
+              <input
+                type="number" min="0" step="0.0001" value={editForm.shares}
+                onChange={(e) => setEditForm((f) => ({ ...f, shares: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label>成本金额（元）</label>
+              <input
+                type="number" min="0" step="0.01" value={editForm.cost_amount}
+                onChange={(e) => setEditForm((f) => ({ ...f, cost_amount: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label>市值（元）</label>
+              <input
+                type="number" min="0" step="0.01" value={editForm.market_amount}
+                onChange={(e) => setEditForm((f) => ({ ...f, market_amount: e.target.value }))}
+              />
+            </div>
+            <button className="btn btn-primary" style={{ width: '100%' }} disabled={saving} onClick={submitEdit}>
+              {saving ? '保存中…' : '保存'}
+            </button>
+          </div>
+        )}
+      </Modal>
+
+      <ConfirmDialog
+        open={!!delFor}
+        title="删除真实持仓"
+        message={delFor
+          ? `将删除「${delFor.name}」（${delFor.code}）的持仓记录。\n外部账户不受影响；删后需要重新导入才能恢复。确定删除？`
+          : ''}
+        danger
+        confirmText="确认删除"
+        onConfirm={confirmDelete}
+        onClose={() => setDelFor(null)}
+      />
 
       <RealFundModal open={!!detailCode} fundCode={detailCode} onClose={() => setDetailCode(null)} />
     </div>
